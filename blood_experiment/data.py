@@ -3,11 +3,15 @@ from __future__ import annotations
 import csv
 import math
 import random
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from PIL import Image
+from PIL import Image, ImageFile, UnidentifiedImageError
+
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
@@ -234,17 +238,48 @@ class ManifestImageDataset:
         self.records = load_manifest_records(manifest_path, split=split)
         self.transform = transform
         self.classes = get_class_names_from_manifest(manifest_path)
+        self._bad_image_paths: set[str] = set()
 
     def __len__(self) -> int:
         return len(self.records)
 
-    def __getitem__(self, index: int):
-        record = self.records[index]
+    @property
+    def skipped_image_count(self) -> int:
+        return len(self._bad_image_paths)
+
+    def _load_image(self, record: ManifestRecord):
         with Image.open(record.image_path) as image:
             image = image.convert("RGB")
             if self.transform is not None:
                 image = self.transform(image)
-        return image, record.class_index, str(record.image_path)
+        return image
+
+    def __getitem__(self, index: int):
+        if not self.records:
+            raise IndexError("ManifestImageDataset is empty.")
+
+        attempted_paths: list[str] = []
+        for offset in range(len(self.records)):
+            record = self.records[(index + offset) % len(self.records)]
+            try:
+                image = self._load_image(record)
+                return image, record.class_index, str(record.image_path)
+            except (OSError, UnidentifiedImageError) as exc:
+                bad_path = str(record.image_path)
+                attempted_paths.append(bad_path)
+                if bad_path not in self._bad_image_paths:
+                    warnings.warn(
+                        f"Skipping unreadable image '{bad_path}': {exc}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    self._bad_image_paths.add(bad_path)
+
+        attempted = ", ".join(attempted_paths)
+        raise RuntimeError(
+            "No readable images were found in the dataset records attempted: "
+            f"{attempted}"
+        )
 
 
 def build_default_transforms(image_size: int = 224):

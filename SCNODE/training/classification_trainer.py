@@ -18,6 +18,16 @@ from blood_experiment.visualization import (
     save_roc_curve_plot,
 )
 from SCNODE.training.experiment_config import args
+from SCNODE.training.progress_reporting import (
+    append_epoch_metrics_row,
+    build_epoch_summary_lines,
+    format_seconds,
+)
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    tqdm = None
 
 
 plt.rcParams["font.family"] = "DejaVu Sans"
@@ -57,6 +67,33 @@ def _unpack_batch(batch):
         inputs, labels = batch
         return inputs, labels, [""] * len(labels)
     raise ValueError(f"Unexpected batch structure with {len(batch)} elements.")
+
+
+def _current_learning_rate(optimizer) -> float:
+    return float(optimizer.param_groups[0]["lr"])
+
+
+def _batch_status(step: int, total_steps: int, avg_loss: float, accuracy: float, learning_rate: float) -> str:
+    return (
+        f"step {step}/{total_steps} | "
+        f"loss={avg_loss:.4f} | acc={accuracy:.2f}% | lr={learning_rate:.6g}"
+    )
+
+
+def _progress_iter(loader, desc: str):
+    if args.use_tqdm and tqdm is not None:
+        return tqdm(loader, total=len(loader), desc=desc, leave=False, dynamic_ncols=True)
+    return loader
+
+
+def _progress_update(progress, text: str) -> None:
+    if args.use_tqdm and tqdm is not None and hasattr(progress, "set_postfix_str"):
+        progress.set_postfix_str(text)
+
+
+def _progress_close(progress) -> None:
+    if args.use_tqdm and tqdm is not None and hasattr(progress, "close"):
+        progress.close()
 
 
 def save_prediction_arrays(model_dir: Path, name: str, probabilities, labels, predictions) -> None:
@@ -125,6 +162,7 @@ def save_epoch_summary(
         handle.write(f"MCC: {summary['mcc']:.6f}\n")
         if args.is_ode:
             handle.write(f"NFE-F: {nfe_history:.4f}, NFE-B: {bnfe_history:.4f}\n")
+        handle.write("-" * 60 + "\n")
 
 
 def _collect_cam_candidates(
@@ -259,8 +297,10 @@ def train_val_test_model(
     model_dir = Path(args.folder_name) / name
     model_dir.mkdir(parents=True, exist_ok=True)
     history_path = model_dir / f"{name}_history.txt"
+    epoch_metrics_csv_path = model_dir / f"{name}_epoch_metrics.csv"
 
     best_accuracy = 0.0
+    best_test_accuracy = 0.0
     train_accuracies = []
     val_accuracies = []
     test_accuracies = []
@@ -280,7 +320,8 @@ def train_val_test_model(
         correct = 0
         total = 0
 
-        for batch in trainloader:
+        progress = _progress_iter(trainloader, desc=f"Epoch {epoch + 1}/{num_epochs} [train]")
+        for step_index, batch in enumerate(progress, start=1):
             inputs, labels, _ = _unpack_batch(batch)
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
@@ -313,28 +354,40 @@ def train_val_test_model(
             predicted = outputs.argmax(dim=1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
+            running_accuracy = 100 * correct / total
+            average_loss = running_train_loss / step_index
+            learning_rate = _current_learning_rate(optimizer)
+            batch_text = _batch_status(
+                step=step_index,
+                total_steps=len(trainloader),
+                avg_loss=average_loss,
+                accuracy=running_accuracy,
+                learning_rate=learning_rate,
+            )
+            _progress_update(progress, batch_text)
+            if (not args.use_tqdm or tqdm is None) and (
+                step_index == 1
+                or step_index == len(trainloader)
+                or step_index % max(args.train_log_interval, 1) == 0
+            ):
+                print(f"[train] {batch_text}")
+        _progress_close(progress)
 
         train_accuracy = 100 * correct / total
         train_accuracies.append(train_accuracy)
         train_losses.append(running_train_loss / len(trainloader))
         epoch_duration = time.time() - epoch_start_time
-        print(
-            f"Epoch [{epoch + 1}/{num_epochs}] "
-            f"Train Accuracy: {train_accuracy:.2f}% "
-            f"Train Loss: {running_train_loss / len(trainloader):.4f} "
-            f"Time: {epoch_duration:.2f}s"
-        )
 
         avg_nfe = 0.0
         avg_bnfe = 0.0
         if args.is_ode:
             avg_nfe = epoch_nfes / len(trainloader)
             avg_bnfe = epoch_backward_nfes / len(trainloader)
-            print(f"NFE-F: {avg_nfe:.2f}, NFE-B: {avg_bnfe:.2f}")
             epoch_nfes = 0
             epoch_backward_nfes = 0
 
         val_accuracy = None
+        val_loss_value = None
         if valloader is not None and len(valloader) > 0:
             model.eval()
             running_val_loss = 0.0
@@ -342,7 +395,8 @@ def train_val_test_model(
             val_total = 0
 
             with torch.no_grad():
-                for batch in valloader:
+                val_progress = _progress_iter(valloader, desc=f"Epoch {epoch + 1}/{num_epochs} [val]")
+                for step_index, batch in enumerate(val_progress, start=1):
                     inputs, labels, _ = _unpack_batch(batch)
                     inputs, labels = inputs.to(device), labels.to(device)
                     outputs = model(inputs)
@@ -351,17 +405,28 @@ def train_val_test_model(
                     predicted = outputs.argmax(dim=1)
                     val_total += labels.size(0)
                     val_correct += (predicted == labels).sum().item()
+                    _progress_update(
+                        val_progress,
+                        _batch_status(
+                            step=step_index,
+                            total_steps=len(valloader),
+                            avg_loss=running_val_loss / step_index,
+                            accuracy=100 * val_correct / val_total,
+                            learning_rate=_current_learning_rate(optimizer),
+                        ),
+                    )
+                _progress_close(val_progress)
 
             val_accuracy = 100 * val_correct / val_total
+            val_loss_value = running_val_loss / len(valloader)
             val_accuracies.append(val_accuracy)
-            val_losses.append(running_val_loss / len(valloader))
-            print(f"Validation Accuracy: {val_accuracy:.2f}% Validation Loss: {running_val_loss / len(valloader):.4f}")
+            val_losses.append(val_loss_value)
 
             if val_accuracy > best_accuracy and args.save_report_pth:
                 best_accuracy = val_accuracy
                 torch.save(model.state_dict(), model_dir / f"{name}_best_model.pth")
         else:
-            print("No validation set used.")
+            val_losses.append(float("nan"))
 
         model.eval()
         all_labels = []
@@ -371,7 +436,10 @@ def train_val_test_model(
         cam_counters = defaultdict(int)
 
         with torch.no_grad():
-            for batch in testloader:
+            test_progress = _progress_iter(testloader, desc=f"Epoch {epoch + 1}/{num_epochs} [test]")
+            test_seen = 0
+            test_correct = 0
+            for step_index, batch in enumerate(test_progress, start=1):
                 inputs, labels, paths = _unpack_batch(batch)
                 inputs = inputs.to(device)
                 labels = labels.to(device)
@@ -382,6 +450,12 @@ def train_val_test_model(
                 all_probabilities.extend(probabilities.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
                 all_predictions.extend(predicted.cpu().numpy())
+                test_seen += labels.size(0)
+                test_correct += (predicted == labels).sum().item()
+                _progress_update(
+                    test_progress,
+                    f"step {step_index}/{len(testloader)} | acc={100 * test_correct / test_seen:.2f}%",
+                )
 
                 if args.generate_cam:
                     cam_candidates.extend(
@@ -394,10 +468,11 @@ def train_val_test_model(
                             counters=cam_counters,
                         )
                     )
+            _progress_close(test_progress)
 
         test_accuracy = 100 * np.mean(np.asarray(all_predictions) == np.asarray(all_labels))
         test_accuracies.append(test_accuracy)
-        print(f"Test Accuracy: {test_accuracy:.2f}%")
+        best_test_accuracy = max(best_test_accuracy, test_accuracy)
 
         report = classification_report(
             all_labels,
@@ -415,11 +490,59 @@ def train_val_test_model(
             y_prob=np.asarray(all_probabilities),
             class_names=class_names,
         )
-        print(
-            "Summary Metrics -> "
-            f"Macro F1: {bundle['summary']['macro_f1']:.4f}, "
-            f"Balanced Accuracy: {bundle['summary']['balanced_accuracy']:.4f}, "
-            f"MCC: {bundle['summary']['mcc']:.4f}"
+        skipped_images = sum(
+            getattr(loader.dataset, "skipped_image_count", 0)
+            for loader in (trainloader, valloader, testloader)
+            if loader is not None
+        )
+        remaining_epochs = num_epochs - (epoch + 1)
+        eta_seconds = remaining_epochs * epoch_duration
+        summary_lines = build_epoch_summary_lines(
+            epoch=epoch + 1,
+            num_epochs=num_epochs,
+            train_loss=train_losses[-1],
+            train_accuracy=train_accuracy,
+            val_loss=val_loss_value,
+            val_accuracy=val_accuracy,
+            test_accuracy=test_accuracy,
+            macro_f1=bundle["summary"]["macro_f1"],
+            balanced_accuracy=bundle["summary"]["balanced_accuracy"],
+            mcc=bundle["summary"]["mcc"],
+            learning_rate=_current_learning_rate(optimizer),
+            epoch_duration=epoch_duration,
+            eta_seconds=eta_seconds,
+            best_val_accuracy=best_accuracy if valloader is not None and len(valloader) > 0 else None,
+            best_test_accuracy=best_test_accuracy,
+            skipped_images=skipped_images,
+        )
+        print("\n" + "=" * 72)
+        for line in summary_lines:
+            print(line)
+        if args.is_ode:
+            print(f"ODE    nfe_f={avg_nfe:.2f}  nfe_b={avg_bnfe:.2f}")
+        if args.full_report:
+            print(report)
+        print("=" * 72)
+
+        append_epoch_metrics_row(
+            csv_path=epoch_metrics_csv_path,
+            row={
+                "epoch": epoch + 1,
+                "train_loss": train_losses[-1],
+                "train_accuracy": train_accuracy,
+                "val_loss": "" if val_loss_value is None else val_loss_value,
+                "val_accuracy": "" if val_accuracy is None else val_accuracy,
+                "test_accuracy": test_accuracy,
+                "macro_f1": bundle["summary"]["macro_f1"],
+                "balanced_accuracy": bundle["summary"]["balanced_accuracy"],
+                "mcc": bundle["summary"]["mcc"],
+                "learning_rate": _current_learning_rate(optimizer),
+                "epoch_duration_seconds": epoch_duration,
+                "eta_seconds": eta_seconds,
+                "best_val_accuracy": "" if val_accuracy is None else best_accuracy,
+                "best_test_accuracy": best_test_accuracy,
+                "skipped_images": skipped_images,
+            },
         )
 
         if args.save_report_pth:

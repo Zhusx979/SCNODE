@@ -1,8 +1,10 @@
 from pathlib import Path
 
 import csv
+from PIL import Image
 
 from blood_experiment.data import (
+    ManifestImageDataset,
     allocate_split_counts,
     create_split_manifest,
     discover_class_names,
@@ -57,3 +59,47 @@ def test_create_split_manifest_generates_three_splits(tmp_path: Path) -> None:
 
     assert per_class["ABE"] == {"train": 6, "val": 1, "test": 1}
     assert per_class["BLA"] == {"train": 6, "val": 1, "test": 1}
+
+
+def test_manifest_dataset_skips_broken_images(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    image_dir = raw_root / "ABE" / "0001-1000"
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    broken_path = image_dir / "ABE_0000.jpg"
+    broken_path.write_bytes(b"not-a-valid-image")
+
+    valid_path = image_dir / "ABE_0001.jpg"
+    Image.new("RGB", (12, 12), color=(120, 30, 220)).save(valid_path)
+
+    manifest_path = tmp_path / "prepared" / "split_manifest.csv"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["split", "class_name", "class_index", "image_path"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "split": "train",
+                "class_name": "ABE",
+                "class_index": 0,
+                "image_path": str(broken_path),
+            }
+        )
+        writer.writerow(
+            {
+                "split": "train",
+                "class_name": "ABE",
+                "class_index": 0,
+                "image_path": str(valid_path),
+            }
+        )
+
+    dataset = ManifestImageDataset(manifest_path, split="train", transform=None)
+    image, class_index, image_path = dataset[0]
+
+    assert image.size == (12, 12)
+    assert class_index == 0
+    assert image_path == str(valid_path)
