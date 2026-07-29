@@ -3,7 +3,6 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -16,6 +15,7 @@ from blood_experiment.visualization import (
     save_confusion_matrix_plot,
     save_precision_recall_plot,
     save_roc_curve_plot,
+    save_training_history_plots,
 )
 from SCNODE.training.experiment_config import args
 from SCNODE.training.ode_runtime import get_and_reset_ode_nfe
@@ -29,10 +29,6 @@ try:
     from tqdm.auto import tqdm
 except ImportError:
     tqdm = None
-
-
-plt.rcParams["font.family"] = "DejaVu Sans"
-plt.rcParams["axes.unicode_minus"] = False
 
 
 def conv_init(m):
@@ -101,47 +97,6 @@ def save_prediction_arrays(model_dir: Path, name: str, probabilities, labels, pr
     np.save(model_dir / f"{name}_predict.npy", np.asarray(probabilities))
     np.save(model_dir / f"{name}_label.npy", np.asarray(labels))
     np.save(model_dir / f"{name}_pred_label.npy", np.asarray(predictions))
-
-
-def draw_figure_loss_and_acc(
-    num_epochs,
-    output_dir: Path,
-    train_accuracies,
-    val_accuracies,
-    test_accuracies,
-    name,
-    train_losses,
-    val_losses,
-):
-    epochs = range(1, num_epochs + 1)
-
-    plt.figure(figsize=(10, 6), dpi=140)
-    plt.plot(epochs, train_accuracies, label="Train Accuracy", color="dodgerblue", linewidth=2)
-    if val_accuracies:
-        plt.plot(epochs, val_accuracies, label="Validation Accuracy", color="limegreen", linewidth=2, linestyle="--")
-    plt.plot(epochs, test_accuracies, label="Test Accuracy", color="coral", linewidth=2, linestyle="-.")
-    plt.title(f"{name} Accuracy over Epochs", fontsize=14, pad=15)
-    plt.xlabel("Epoch", fontsize=12)
-    plt.ylabel("Accuracy (%)", fontsize=12)
-    plt.legend(loc="best", fontsize=10, frameon=True, shadow=True)
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.tight_layout()
-    plt.savefig(output_dir / f"{name}_accuracy_plot.png", bbox_inches="tight")
-    plt.close()
-
-    plt.figure(figsize=(10, 6), dpi=140)
-    plt.plot(epochs, train_losses, label="Train Loss", color="dodgerblue", linewidth=2)
-    if val_losses:
-        plt.plot(epochs, val_losses, label="Validation Loss", color="coral", linewidth=2, linestyle="--")
-    plt.title(f"{name} Loss over Epochs", fontsize=14, pad=15)
-    plt.xlabel("Epoch", fontsize=12)
-    plt.ylabel("Loss", fontsize=12)
-    plt.legend(loc="best", fontsize=10, frameon=True, shadow=True)
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.tight_layout()
-    plt.savefig(output_dir / f"{name}_loss_plot.png", bbox_inches="tight")
-    plt.close()
-
 
 def save_epoch_summary(
     history_path: Path,
@@ -253,8 +208,7 @@ def _export_final_artifacts(
             class_names=class_names,
             title=f"{name} Precision-Recall Curves",
         )
-        draw_figure_loss_and_acc(
-            num_epochs=len(train_accuracies),
+        save_training_history_plots(
             output_dir=plots_dir,
             train_accuracies=train_accuracies,
             val_accuracies=val_accuracies,

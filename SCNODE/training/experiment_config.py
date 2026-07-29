@@ -40,6 +40,21 @@ AVAILABLE_MODELS = {
         "SCNODE.models.ode.scnode.scnode_resnet",
         "Get_time_AnodeV2_ResNet18",
     ),
+    "AnodeV2_ResNet18": ModelSpec(
+        "AnodeV2_ResNet18",
+        "SCNODE.models.ode.scnode.anode_v2.anode_v2_resnet",
+        "Get_AnodeV2_ResNet18",
+    ),
+    "AnodeV2_ResNet34": ModelSpec(
+        "AnodeV2_ResNet34",
+        "SCNODE.models.ode.scnode.anode_v2.anode_v2_resnet",
+        "Get_AnodeV2_ResNet34",
+    ),
+    "AnodeV2_ResNet50": ModelSpec(
+        "AnodeV2_ResNet50",
+        "SCNODE.models.ode.scnode.anode_v2.anode_v2_resnet",
+        "Get_AnodeV2_ResNet50",
+    ),
 }
 
 

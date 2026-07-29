@@ -9,6 +9,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from blood_experiment.plot_style import CAM_CMAP, finalize_figure
+
 
 def _normalize_heatmap(heatmap: np.ndarray) -> np.ndarray:
     array = np.asarray(heatmap, dtype=float)
@@ -17,6 +19,46 @@ def _normalize_heatmap(heatmap: np.ndarray) -> np.ndarray:
     if max_value == 0.0:
         return np.zeros_like(array)
     return array / max_value
+
+
+def _prepare_base_image(image: np.ndarray) -> np.ndarray:
+    base_image = np.asarray(image)
+    if base_image.dtype != np.uint8:
+        base_image = np.clip(base_image, 0, 255).astype(np.uint8)
+    return base_image
+
+
+def _activation_alpha(normalized_heatmap: np.ndarray) -> np.ndarray:
+    return np.clip(np.power(normalized_heatmap, 0.8), 0.14, 0.82)
+
+
+def _draw_contours(axis, heatmap: np.ndarray) -> None:
+    finite_values = np.unique(np.asarray(heatmap, dtype=float))
+    contour_levels = [level for level in (0.35, 0.55, 0.75) if finite_values.min() < level < finite_values.max()]
+    if not contour_levels:
+        return
+    axis.contour(
+        heatmap,
+        levels=contour_levels,
+        colors=["#FFF7D6", "#F4A261", "#9A3412"][: len(contour_levels)],
+        linewidths=[0.5, 0.65, 0.9][: len(contour_levels)],
+        alpha=0.65,
+    )
+
+
+def _draw_cam_panel(axis, base_image: np.ndarray, heatmap: np.ndarray | None, title: str) -> Any:
+    axis.imshow(base_image)
+    overlay_artist = None
+    if heatmap is not None:
+        overlay_artist = axis.imshow(
+            heatmap,
+            cmap=CAM_CMAP,
+            alpha=_activation_alpha(heatmap),
+        )
+        _draw_contours(axis, heatmap)
+    axis.set_title(title, fontsize=11.8, pad=10, loc="left")
+    axis.axis("off")
+    return overlay_artist
 
 
 def save_overlay_preview(
@@ -28,20 +70,67 @@ def save_overlay_preview(
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    base_image = np.asarray(image)
-    if base_image.dtype != np.uint8:
-        base_image = np.clip(base_image, 0, 255).astype(np.uint8)
-
+    base_image = _prepare_base_image(image)
     normalized_heatmap = _normalize_heatmap(heatmap)
-    fig, ax = plt.subplots(figsize=(5, 5), dpi=180)
-    ax.imshow(base_image)
-    ax.imshow(normalized_heatmap, cmap="jet", alpha=0.42)
-    ax.set_title(title, fontsize=12, pad=10)
-    ax.axis("off")
+
+    fig, ax = plt.subplots(figsize=(4.9, 4.9), dpi=220)
+    overlay_artist = _draw_cam_panel(ax, base_image, normalized_heatmap, title)
+    colorbar = fig.colorbar(overlay_artist, ax=ax, fraction=0.045, pad=0.03, shrink=0.88)
+    colorbar.outline.set_visible(False)
+    colorbar.ax.tick_params(labelsize=8.5)
+    colorbar.set_label("Activation", fontsize=9)
     fig.tight_layout()
-    fig.savefig(destination, bbox_inches="tight", pad_inches=0.08)
+    saved_path = finalize_figure(fig, destination)
     plt.close(fig)
-    return destination
+    return saved_path
+
+
+def save_cam_comparison_figure(
+    output_path: Path | str,
+    image: np.ndarray,
+    gradcam_heatmap: np.ndarray,
+    smoothgradcam_heatmap: np.ndarray,
+    predicted_label: str,
+    true_label: str,
+) -> Path:
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    base_image = _prepare_base_image(image)
+    normalized_gradcam = _normalize_heatmap(gradcam_heatmap)
+    normalized_smooth = _normalize_heatmap(smoothgradcam_heatmap)
+
+    fig, axes = plt.subplots(
+        1,
+        3,
+        figsize=(10.8, 3.9),
+        dpi=220,
+        gridspec_kw={"wspace": 0.03},
+        constrained_layout=True,
+    )
+    _draw_cam_panel(axes[0], base_image, None, "Input Image")
+    grad_artist = _draw_cam_panel(axes[1], base_image, normalized_gradcam, f"Grad-CAM | Pred: {predicted_label}")
+    _draw_cam_panel(axes[2], base_image, normalized_smooth, f"Smooth Grad-CAM | Pred: {predicted_label}")
+
+    axes[0].text(
+        0.02,
+        0.04,
+        f"True: {true_label}",
+        transform=axes[0].transAxes,
+        fontsize=9.3,
+        color="#F8FAFC",
+        bbox={"boxstyle": "round,pad=0.25", "fc": "#1E293B", "ec": "#334155", "lw": 0.8, "alpha": 0.92},
+    )
+
+    colorbar = fig.colorbar(grad_artist, ax=axes, fraction=0.02, pad=0.01, shrink=0.92)
+    colorbar.outline.set_visible(False)
+    colorbar.ax.tick_params(labelsize=8.5)
+    colorbar.set_label("Activation intensity", fontsize=9)
+
+    fig.suptitle("Class Activation Comparison", x=0.055, y=1.03, ha="left", fontsize=13.5, fontweight="bold")
+    saved_path = finalize_figure(fig, destination)
+    plt.close(fig)
+    return saved_path
 
 
 @dataclass
@@ -51,6 +140,7 @@ class CamArtifact:
     true_label: str
     gradcam_path: Path
     smoothgradcam_path: Path
+    comparison_path: Path | None = None
 
 
 def save_cam_bundle(
@@ -74,6 +164,14 @@ def save_cam_bundle(
             overlay["smoothgradcam_heatmap"],
             overlay.get("smoothgradcam_title", "Smooth Grad-CAM"),
         )
+        comparison_path = save_cam_comparison_figure(
+            destination / f"sample_{index:03d}_cam_comparison.png",
+            image=overlay["image"],
+            gradcam_heatmap=overlay["gradcam_heatmap"],
+            smoothgradcam_heatmap=overlay["smoothgradcam_heatmap"],
+            predicted_label=str(overlay.get("predicted_label", "")),
+            true_label=str(overlay.get("true_label", "")),
+        )
         artifacts.append(
             CamArtifact(
                 image_path=str(overlay.get("image_path", "")),
@@ -81,6 +179,7 @@ def save_cam_bundle(
                 true_label=str(overlay.get("true_label", "")),
                 gradcam_path=gradcam_path,
                 smoothgradcam_path=smoothgradcam_path,
+                comparison_path=comparison_path,
             )
         )
     return artifacts
@@ -123,6 +222,13 @@ def resolve_target_layer(
     return layer_name, modules[layer_name]
 
 
+def infer_model_device(model: torch.nn.Module) -> torch.device:
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return torch.device("cpu")
+
+
 def _compute_cam_heatmap(
     model: torch.nn.Module,
     input_tensor: torch.Tensor,
@@ -131,8 +237,10 @@ def _compute_cam_heatmap(
 ) -> np.ndarray:
     hook = _CamHook(target_layer)
     try:
+        model_device = infer_model_device(model)
+        prepared_input = input_tensor.unsqueeze(0).to(model_device)
         model.zero_grad(set_to_none=True)
-        outputs = model(input_tensor.unsqueeze(0))
+        outputs = model(prepared_input)
         target_score = outputs[:, class_index].sum()
         target_score.backward()
 
@@ -206,22 +314,23 @@ def generate_cam_overlays(
     base_model = model.module if hasattr(model, "module") else model
     base_model.eval()
     overlays: list[dict[str, Any]] = []
+    model_device = infer_model_device(base_model)
 
     for sample in samples:
-        tensor = sample["input_tensor"]
-        if tensor.device.type != "cpu":
-            tensor = tensor.detach().cpu()
+        tensor = sample["input_tensor"].detach()
+        preview_tensor = tensor.cpu()
+        model_tensor = tensor.to(model_device)
         predicted_index = int(sample["predicted_index"])
-        image = _tensor_to_uint8_image(tensor, mean=mean, std=std)
+        image = _tensor_to_uint8_image(preview_tensor, mean=mean, std=std)
         gradcam_heatmap = generate_gradcam_heatmap(
             base_model,
-            tensor,
+            model_tensor,
             predicted_index,
             target_layer_name=target_layer_name,
         )
         smoothgradcam_heatmap = generate_smoothgradcam_heatmap(
             base_model,
-            tensor,
+            model_tensor,
             predicted_index,
             target_layer_name=target_layer_name,
             noise_samples=noise_samples,
