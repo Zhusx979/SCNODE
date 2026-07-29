@@ -89,7 +89,7 @@ def save_cam_comparison_figure(
     output_path: Path | str,
     image: np.ndarray,
     gradcam_heatmap: np.ndarray,
-    smoothgradcam_heatmap: np.ndarray,
+    smoothgrad_heatmap: np.ndarray,
     predicted_label: str,
     true_label: str,
 ) -> Path:
@@ -98,7 +98,7 @@ def save_cam_comparison_figure(
 
     base_image = _prepare_base_image(image)
     normalized_gradcam = _normalize_heatmap(gradcam_heatmap)
-    normalized_smooth = _normalize_heatmap(smoothgradcam_heatmap)
+    normalized_smooth = _normalize_heatmap(smoothgrad_heatmap)
 
     fig, axes = plt.subplots(
         1,
@@ -110,7 +110,7 @@ def save_cam_comparison_figure(
     )
     _draw_cam_panel(axes[0], base_image, None, "Input Image")
     grad_artist = _draw_cam_panel(axes[1], base_image, normalized_gradcam, f"Grad-CAM | Pred: {predicted_label}")
-    _draw_cam_panel(axes[2], base_image, normalized_smooth, f"Smooth Grad-CAM | Pred: {predicted_label}")
+    _draw_cam_panel(axes[2], base_image, normalized_smooth, f"SmoothGrad | Pred: {predicted_label}")
 
     axes[0].text(
         0.02,
@@ -139,7 +139,7 @@ class CamArtifact:
     predicted_label: str
     true_label: str
     gradcam_path: Path
-    smoothgradcam_path: Path
+    smoothgrad_path: Path
     comparison_path: Path | None = None
 
 
@@ -158,17 +158,17 @@ def save_cam_bundle(
             overlay["gradcam_heatmap"],
             overlay.get("gradcam_title", "Grad-CAM"),
         )
-        smoothgradcam_path = save_overlay_preview(
-            destination / f"sample_{index:03d}_smoothgradcam.png",
+        smoothgrad_path = save_overlay_preview(
+            destination / f"sample_{index:03d}_smoothgrad.png",
             overlay["image"],
-            overlay["smoothgradcam_heatmap"],
-            overlay.get("smoothgradcam_title", "Smooth Grad-CAM"),
+            overlay["smoothgrad_heatmap"],
+            overlay.get("smoothgrad_title", "SmoothGrad"),
         )
         comparison_path = save_cam_comparison_figure(
             destination / f"sample_{index:03d}_cam_comparison.png",
             image=overlay["image"],
             gradcam_heatmap=overlay["gradcam_heatmap"],
-            smoothgradcam_heatmap=overlay["smoothgradcam_heatmap"],
+            smoothgrad_heatmap=overlay["smoothgrad_heatmap"],
             predicted_label=str(overlay.get("predicted_label", "")),
             true_label=str(overlay.get("true_label", "")),
         )
@@ -178,7 +178,7 @@ def save_cam_bundle(
                 predicted_label=str(overlay.get("predicted_label", "")),
                 true_label=str(overlay.get("true_label", "")),
                 gradcam_path=gradcam_path,
-                smoothgradcam_path=smoothgradcam_path,
+                smoothgrad_path=smoothgrad_path,
                 comparison_path=comparison_path,
             )
         )
@@ -262,6 +262,23 @@ def _compute_cam_heatmap(
         hook.close()
 
 
+def _compute_input_gradient(
+    model: torch.nn.Module,
+    input_tensor: torch.Tensor,
+    class_index: int,
+) -> torch.Tensor:
+    model_device = infer_model_device(model)
+    prepared_input = input_tensor.unsqueeze(0).to(model_device).detach().clone()
+    prepared_input.requires_grad_(True)
+    model.zero_grad(set_to_none=True)
+    outputs = model(prepared_input)
+    target_score = outputs[:, class_index].sum()
+    target_score.backward()
+    if prepared_input.grad is None:
+        raise RuntimeError("SmoothGrad did not capture input gradients.")
+    return prepared_input.grad.detach()[0]
+
+
 def _tensor_to_uint8_image(
     tensor: torch.Tensor,
     mean: tuple[float, float, float],
@@ -283,6 +300,25 @@ def generate_gradcam_heatmap(
     return _compute_cam_heatmap(model, input_tensor, class_index, target_layer)
 
 
+def generate_smoothgrad_heatmap(
+    model: torch.nn.Module,
+    input_tensor: torch.Tensor,
+    class_index: int,
+    target_layer_name: str | None = None,
+    noise_samples: int = 8,
+    noise_sigma: float = 0.1,
+) -> np.ndarray:
+    del target_layer_name
+    gradients = []
+    for _ in range(max(noise_samples, 1)):
+        noise = torch.randn_like(input_tensor) * noise_sigma
+        noisy_input = input_tensor + noise
+        gradients.append(_compute_input_gradient(model, noisy_input, class_index).abs())
+    mean_gradient = torch.stack(gradients, dim=0).mean(dim=0)
+    heatmap = mean_gradient.mean(dim=0).detach().cpu().numpy()
+    return _normalize_heatmap(heatmap)
+
+
 def generate_smoothgradcam_heatmap(
     model: torch.nn.Module,
     input_tensor: torch.Tensor,
@@ -291,13 +327,14 @@ def generate_smoothgradcam_heatmap(
     noise_samples: int = 8,
     noise_sigma: float = 0.1,
 ) -> np.ndarray:
-    _, target_layer = resolve_target_layer(model, target_layer_name)
-    heatmaps = []
-    for _ in range(max(noise_samples, 1)):
-        noise = torch.randn_like(input_tensor) * noise_sigma
-        noisy_input = input_tensor + noise
-        heatmaps.append(_compute_cam_heatmap(model, noisy_input, class_index, target_layer))
-    return _normalize_heatmap(np.mean(np.stack(heatmaps, axis=0), axis=0))
+    return generate_smoothgrad_heatmap(
+        model=model,
+        input_tensor=input_tensor,
+        class_index=class_index,
+        target_layer_name=target_layer_name,
+        noise_samples=noise_samples,
+        noise_sigma=noise_sigma,
+    )
 
 
 def generate_cam_overlays(
@@ -328,7 +365,7 @@ def generate_cam_overlays(
             predicted_index,
             target_layer_name=target_layer_name,
         )
-        smoothgradcam_heatmap = generate_smoothgradcam_heatmap(
+        smoothgrad_heatmap = generate_smoothgrad_heatmap(
             base_model,
             model_tensor,
             predicted_index,
@@ -343,9 +380,9 @@ def generate_cam_overlays(
                 "predicted_label": class_names[predicted_index],
                 "true_label": class_names[int(sample["true_index"])],
                 "gradcam_heatmap": gradcam_heatmap,
-                "smoothgradcam_heatmap": smoothgradcam_heatmap,
+                "smoothgrad_heatmap": smoothgrad_heatmap,
                 "gradcam_title": f"Grad-CAM | Pred: {class_names[predicted_index]}",
-                "smoothgradcam_title": f"Smooth Grad-CAM | Pred: {class_names[predicted_index]}",
+                "smoothgrad_title": f"SmoothGrad | Pred: {class_names[predicted_index]}",
             }
         )
 

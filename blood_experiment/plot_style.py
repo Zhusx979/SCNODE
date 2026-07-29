@@ -31,7 +31,7 @@ MICRO_CURVE_COLOR = "#0F4C5C"
 MACRO_CURVE_COLOR = "#C8553D"
 CONFUSION_CMAP = LinearSegmentedColormap.from_list(
     "bm_confusion",
-    ["#F8FBFF", "#D6E9F8", "#8FBFE0", "#2D6A8A", "#153B50"],
+    ["#0D0887", "#5B02A3", "#9A179B", "#CC4678", "#ED7953", "#FBB32F", "#F0F921"],
 )
 CAM_CMAP = LinearSegmentedColormap.from_list(
     "bm_cam",

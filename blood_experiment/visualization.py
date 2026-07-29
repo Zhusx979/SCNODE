@@ -78,27 +78,44 @@ def save_confusion_matrix_plot(
         vmin=0.0,
         vmax=1.0 if normalize else None,
     )
-    ax.set_title(title, fontsize=14, pad=18, loc="left")
+    ax.set_title(title, fontsize=14, pad=8, loc="left")
     ax.set_xlabel("Predicted Class", labelpad=12)
     ax.set_ylabel("True Class", labelpad=12)
     ax.set_xticks(np.arange(len(class_names)))
     ax.set_yticks(np.arange(len(class_names)))
     ax.set_xticklabels(class_names, rotation=45, ha="right")
     ax.set_yticklabels(class_names)
-    ax.tick_params(axis="both", length=0, pad=6)
+    ax.tick_params(axis="x", top=False, bottom=True, labeltop=False, labelbottom=True, length=4, width=1.1, pad=6)
+    ax.tick_params(axis="y", left=True, right=False, length=4, width=1.1, pad=6)
     ax.set_xticks(np.arange(-0.5, len(class_names), 1), minor=True)
     ax.set_yticks(np.arange(-0.5, len(class_names), 1), minor=True)
-    ax.grid(which="minor", color="#FFFFFF", linewidth=0.9)
+    ax.grid(which="minor", color="#160B39", linewidth=0.35, alpha=0.28)
     ax.tick_params(which="minor", bottom=False, left=False)
-    for spine_name in ("left", "bottom"):
-        ax.spines[spine_name].set_visible(False)
+    for spine_name in ("left", "bottom", "top", "right"):
+        ax.spines[spine_name].set_visible(True)
+        ax.spines[spine_name].set_color("#111111")
+        ax.spines[spine_name].set_linewidth(1.5)
 
-    colorbar = fig.colorbar(heatmap, ax=ax, fraction=0.045, pad=0.03, shrink=0.92)
-    colorbar.outline.set_visible(False)
-    colorbar.ax.tick_params(labelsize=9)
-    colorbar.set_label("Row-normalized proportion" if normalize else "Sample count", fontsize=10)
+    colorbar = fig.colorbar(
+        heatmap,
+        ax=ax,
+        orientation="horizontal",
+        location="top",
+        fraction=0.055,
+        pad=0.025,
+        shrink=1.0,
+        aspect=22,
+    )
+    colorbar.ax.xaxis.set_ticks_position("top")
+    colorbar.ax.xaxis.set_label_position("top")
+    colorbar.ax.tick_params(labelsize=9, length=4, width=1.0, pad=2, colors="#111111")
+    colorbar.outline.set_visible(True)
+    colorbar.outline.set_edgecolor("#111111")
+    colorbar.outline.set_linewidth(1.5)
+    if normalize:
+        colorbar.set_ticks(np.linspace(0.0, 1.0, 6))
 
-    fig.tight_layout()
+    fig.tight_layout(pad=0.55)
     return finalize_figure(fig, destination)
 
 
