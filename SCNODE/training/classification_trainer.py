@@ -18,6 +18,7 @@ from blood_experiment.visualization import (
     save_roc_curve_plot,
 )
 from SCNODE.training.experiment_config import args
+from SCNODE.training.ode_runtime import get_and_reset_ode_nfe
 from SCNODE.training.progress_reporting import (
     append_epoch_metrics_row,
     build_epoch_summary_lines,
@@ -328,24 +329,14 @@ def train_val_test_model(
             outputs = model(inputs)
 
             if args.is_ode:
-                if hasattr(model, "odeblock"):
-                    nfe_forward = model.odeblock.odefunc.nfe
-                    model.odeblock.odefunc.nfe = 0
-                else:
-                    nfe_forward = model.nfe
-                    model.nfe = 0
+                nfe_forward = get_and_reset_ode_nfe(model)
                 epoch_nfes += nfe_forward
 
             loss = criterion(outputs, labels)
             loss.backward()
 
             if args.is_ode:
-                if hasattr(model, "odeblock"):
-                    nfe_backward = model.odeblock.odefunc.nfe
-                    model.odeblock.odefunc.nfe = 0
-                else:
-                    nfe_backward = model.nfe
-                    model.nfe = 0
+                nfe_backward = get_and_reset_ode_nfe(model)
                 epoch_backward_nfes += nfe_backward
 
             optimizer.step()
