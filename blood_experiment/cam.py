@@ -169,20 +169,15 @@ def save_cam_comparison_figure(
     normalized_smooth = _normalize_heatmap(smoothgrad_heatmap)
 
     fig, axes = plt.subplots(
-        3,
+        2,
         1,
-        figsize=(4.2, 11.8),
+        figsize=(4.2, 7.8),
         dpi=220,
-        gridspec_kw={"hspace": 0.015},
+        gridspec_kw={"hspace": 0.02},
         constrained_layout=True,
     )
-    _draw_cam_panel_clean(axes[0], base_image, None)
-    _draw_cam_panel_clean(axes[1], base_image, normalized_gradcam)
-    _draw_smoothgrad_panel_clean(
-        axes[2],
-        grayscale_image,
-        normalized_smooth,
-    )
+    _draw_cam_panel_clean(axes[0], base_image, normalized_gradcam)
+    _draw_smoothgrad_panel_clean(axes[1], grayscale_image, normalized_smooth)
     saved_path = finalize_figure(fig, destination)
     plt.close(fig)
     return saved_path
