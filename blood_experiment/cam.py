@@ -28,8 +28,18 @@ def _prepare_base_image(image: np.ndarray) -> np.ndarray:
     return base_image
 
 
+def _prepare_grayscale_image(image: np.ndarray) -> np.ndarray:
+    base_image = _prepare_base_image(image).astype(float)
+    grayscale = np.dot(base_image[..., :3], np.array([0.299, 0.587, 0.114], dtype=float))
+    return np.clip(grayscale, 0.0, 255.0).astype(np.uint8)
+
+
 def _activation_alpha(normalized_heatmap: np.ndarray) -> np.ndarray:
     return np.clip(np.power(normalized_heatmap, 0.8), 0.14, 0.82)
+
+
+def _smoothgrad_alpha(normalized_heatmap: np.ndarray) -> np.ndarray:
+    return np.clip(np.power(normalized_heatmap, 1.2), 0.08, 0.95)
 
 
 def _draw_contours(axis, heatmap: np.ndarray) -> None:
@@ -61,11 +71,29 @@ def _draw_cam_panel(axis, base_image: np.ndarray, heatmap: np.ndarray | None, ti
     return overlay_artist
 
 
+def _draw_smoothgrad_panel(axis, grayscale_image: np.ndarray, heatmap: np.ndarray | None, title: str) -> Any:
+    axis.set_facecolor("black")
+    axis.imshow(grayscale_image, cmap="gray", vmin=0, vmax=255)
+    overlay_artist = None
+    if heatmap is not None:
+        overlay_artist = axis.imshow(
+            heatmap,
+            cmap="gray",
+            vmin=0.0,
+            vmax=1.0,
+            alpha=_smoothgrad_alpha(heatmap),
+        )
+    axis.set_title(title, fontsize=11.8, pad=10, loc="left")
+    axis.axis("off")
+    return overlay_artist
+
+
 def save_overlay_preview(
     output_path: Path | str,
     image: np.ndarray,
     heatmap: np.ndarray,
     title: str,
+    mode: str = "gradcam",
 ) -> Path:
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -74,11 +102,19 @@ def save_overlay_preview(
     normalized_heatmap = _normalize_heatmap(heatmap)
 
     fig, ax = plt.subplots(figsize=(4.9, 4.9), dpi=220)
-    overlay_artist = _draw_cam_panel(ax, base_image, normalized_heatmap, title)
+    if mode == "smoothgrad":
+        overlay_artist = _draw_smoothgrad_panel(
+            ax,
+            _prepare_grayscale_image(base_image),
+            normalized_heatmap,
+            title,
+        )
+    else:
+        overlay_artist = _draw_cam_panel(ax, base_image, normalized_heatmap, title)
     colorbar = fig.colorbar(overlay_artist, ax=ax, fraction=0.045, pad=0.03, shrink=0.88)
     colorbar.outline.set_visible(False)
     colorbar.ax.tick_params(labelsize=8.5)
-    colorbar.set_label("Activation", fontsize=9)
+    colorbar.set_label("Saliency" if mode == "smoothgrad" else "Activation", fontsize=9)
     fig.tight_layout()
     saved_path = finalize_figure(fig, destination)
     plt.close(fig)
@@ -97,6 +133,7 @@ def save_cam_comparison_figure(
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     base_image = _prepare_base_image(image)
+    grayscale_image = _prepare_grayscale_image(base_image)
     normalized_gradcam = _normalize_heatmap(gradcam_heatmap)
     normalized_smooth = _normalize_heatmap(smoothgrad_heatmap)
 
@@ -110,7 +147,12 @@ def save_cam_comparison_figure(
     )
     _draw_cam_panel(axes[0], base_image, None, "Input Image")
     grad_artist = _draw_cam_panel(axes[1], base_image, normalized_gradcam, f"Grad-CAM | Pred: {predicted_label}")
-    _draw_cam_panel(axes[2], base_image, normalized_smooth, f"SmoothGrad | Pred: {predicted_label}")
+    smooth_artist = _draw_smoothgrad_panel(
+        axes[2],
+        grayscale_image,
+        normalized_smooth,
+        f"SmoothGrad | Pred: {predicted_label}",
+    )
 
     axes[0].text(
         0.02,
@@ -125,7 +167,12 @@ def save_cam_comparison_figure(
     colorbar = fig.colorbar(grad_artist, ax=axes, fraction=0.02, pad=0.01, shrink=0.92)
     colorbar.outline.set_visible(False)
     colorbar.ax.tick_params(labelsize=8.5)
-    colorbar.set_label("Activation intensity", fontsize=9)
+    colorbar.set_label("Grad-CAM intensity", fontsize=9)
+
+    smooth_colorbar = fig.colorbar(smooth_artist, ax=axes[2], fraction=0.04, pad=0.015, shrink=0.92)
+    smooth_colorbar.outline.set_visible(False)
+    smooth_colorbar.ax.tick_params(labelsize=8.5)
+    smooth_colorbar.set_label("SmoothGrad saliency", fontsize=9)
 
     fig.suptitle("Class Activation Comparison", x=0.055, y=1.03, ha="left", fontsize=13.5, fontweight="bold")
     saved_path = finalize_figure(fig, destination)
@@ -163,6 +210,7 @@ def save_cam_bundle(
             overlay["image"],
             overlay["smoothgrad_heatmap"],
             overlay.get("smoothgrad_title", "SmoothGrad"),
+            mode="smoothgrad",
         )
         comparison_path = save_cam_comparison_figure(
             destination / f"sample_{index:03d}_cam_comparison.png",
