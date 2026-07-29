@@ -146,5 +146,4 @@ def test_generate_cam_overlays_moves_tensor_to_model_device(tmp_path: Path, monk
     )
 
     assert seen_devices == [next(model.parameters()).device.type, next(model.parameters()).device.type]
-    assert artifacts[0].gradcam_path.exists()
-    assert artifacts[0].smoothgrad_path.exists()
+    assert artifacts[0].comparison_path.exists()

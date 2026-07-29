@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -88,6 +89,38 @@ def _draw_smoothgrad_panel(axis, grayscale_image: np.ndarray, heatmap: np.ndarra
     return overlay_artist
 
 
+def _draw_cam_panel_clean(axis, base_image: np.ndarray, heatmap: np.ndarray | None) -> None:
+    axis.imshow(base_image)
+    if heatmap is not None:
+        axis.imshow(
+            heatmap,
+            cmap=CAM_CMAP,
+            alpha=_activation_alpha(heatmap),
+        )
+        _draw_contours(axis, heatmap)
+    axis.axis("off")
+
+
+def _draw_smoothgrad_panel_clean(axis, grayscale_image: np.ndarray, heatmap: np.ndarray | None) -> None:
+    axis.set_facecolor("black")
+    axis.imshow(grayscale_image, cmap="gray", vmin=0, vmax=255)
+    if heatmap is not None:
+        axis.imshow(
+            heatmap,
+            cmap="gray",
+            vmin=0.0,
+            vmax=1.0,
+            alpha=_smoothgrad_alpha(heatmap),
+        )
+    axis.axis("off")
+
+
+def _sanitize_filename(label: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "_", label.strip())
+    sanitized = sanitized.strip("_")
+    return sanitized or "cell"
+
+
 def save_overlay_preview(
     output_path: Path | str,
     image: np.ndarray,
@@ -126,8 +159,6 @@ def save_cam_comparison_figure(
     image: np.ndarray,
     gradcam_heatmap: np.ndarray,
     smoothgrad_heatmap: np.ndarray,
-    predicted_label: str,
-    true_label: str,
 ) -> Path:
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -138,43 +169,20 @@ def save_cam_comparison_figure(
     normalized_smooth = _normalize_heatmap(smoothgrad_heatmap)
 
     fig, axes = plt.subplots(
-        1,
         3,
-        figsize=(10.8, 3.9),
+        1,
+        figsize=(4.2, 11.8),
         dpi=220,
-        gridspec_kw={"wspace": 0.03},
+        gridspec_kw={"hspace": 0.015},
         constrained_layout=True,
     )
-    _draw_cam_panel(axes[0], base_image, None, "Input Image")
-    grad_artist = _draw_cam_panel(axes[1], base_image, normalized_gradcam, f"Grad-CAM | Pred: {predicted_label}")
-    smooth_artist = _draw_smoothgrad_panel(
+    _draw_cam_panel_clean(axes[0], base_image, None)
+    _draw_cam_panel_clean(axes[1], base_image, normalized_gradcam)
+    _draw_smoothgrad_panel_clean(
         axes[2],
         grayscale_image,
         normalized_smooth,
-        f"SmoothGrad | Pred: {predicted_label}",
     )
-
-    axes[0].text(
-        0.02,
-        0.04,
-        f"True: {true_label}",
-        transform=axes[0].transAxes,
-        fontsize=9.3,
-        color="#F8FAFC",
-        bbox={"boxstyle": "round,pad=0.25", "fc": "#1E293B", "ec": "#334155", "lw": 0.8, "alpha": 0.92},
-    )
-
-    colorbar = fig.colorbar(grad_artist, ax=axes, fraction=0.02, pad=0.01, shrink=0.92)
-    colorbar.outline.set_visible(False)
-    colorbar.ax.tick_params(labelsize=8.5)
-    colorbar.set_label("Grad-CAM intensity", fontsize=9)
-
-    smooth_colorbar = fig.colorbar(smooth_artist, ax=axes[2], fraction=0.04, pad=0.015, shrink=0.92)
-    smooth_colorbar.outline.set_visible(False)
-    smooth_colorbar.ax.tick_params(labelsize=8.5)
-    smooth_colorbar.set_label("SmoothGrad saliency", fontsize=9)
-
-    fig.suptitle("Class Activation Comparison", x=0.055, y=1.03, ha="left", fontsize=13.5, fontweight="bold")
     saved_path = finalize_figure(fig, destination)
     plt.close(fig)
     return saved_path
@@ -185,9 +193,7 @@ class CamArtifact:
     image_path: str
     predicted_label: str
     true_label: str
-    gradcam_path: Path
-    smoothgrad_path: Path
-    comparison_path: Path | None = None
+    comparison_path: Path
 
 
 def save_cam_bundle(
@@ -197,36 +203,23 @@ def save_cam_bundle(
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     artifacts: list[CamArtifact] = []
+    name_counters: dict[str, int] = {}
 
-    for index, overlay in enumerate(overlays):
-        gradcam_path = save_overlay_preview(
-            destination / f"sample_{index:03d}_gradcam.png",
-            overlay["image"],
-            overlay["gradcam_heatmap"],
-            overlay.get("gradcam_title", "Grad-CAM"),
-        )
-        smoothgrad_path = save_overlay_preview(
-            destination / f"sample_{index:03d}_smoothgrad.png",
-            overlay["image"],
-            overlay["smoothgrad_heatmap"],
-            overlay.get("smoothgrad_title", "SmoothGrad"),
-            mode="smoothgrad",
-        )
+    for overlay in overlays:
+        base_name = _sanitize_filename(str(overlay.get("true_label", "")))
+        name_counters[base_name] = name_counters.get(base_name, 0) + 1
+        file_stem = base_name if name_counters[base_name] == 1 else f"{base_name}_{name_counters[base_name]:02d}"
         comparison_path = save_cam_comparison_figure(
-            destination / f"sample_{index:03d}_cam_comparison.png",
+            destination / f"{file_stem}.png",
             image=overlay["image"],
             gradcam_heatmap=overlay["gradcam_heatmap"],
             smoothgrad_heatmap=overlay["smoothgrad_heatmap"],
-            predicted_label=str(overlay.get("predicted_label", "")),
-            true_label=str(overlay.get("true_label", "")),
         )
         artifacts.append(
             CamArtifact(
                 image_path=str(overlay.get("image_path", "")),
                 predicted_label=str(overlay.get("predicted_label", "")),
                 true_label=str(overlay.get("true_label", "")),
-                gradcam_path=gradcam_path,
-                smoothgrad_path=smoothgrad_path,
                 comparison_path=comparison_path,
             )
         )
@@ -429,8 +422,6 @@ def generate_cam_overlays(
                 "true_label": class_names[int(sample["true_index"])],
                 "gradcam_heatmap": gradcam_heatmap,
                 "smoothgrad_heatmap": smoothgrad_heatmap,
-                "gradcam_title": f"Grad-CAM | Pred: {class_names[predicted_index]}",
-                "smoothgrad_title": f"SmoothGrad | Pred: {class_names[predicted_index]}",
             }
         )
 
