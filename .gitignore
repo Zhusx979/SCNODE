@@ -1,0 +1,48 @@
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE and OS files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+
+# Large raw datasets and archives
+BM_cytomorphology_data/
+BM_cytomorphology_data.zip
+
+# Generated experiment artifacts
+artifacts/datasets/
+artifacts/experiments/
+
+# Legacy archived datasets and experiment outputs
+SCNODE/archive/datasets/
+SCNODE/archive/results/
+
+# Notebook and local scratch outputs
+.ipynb_checkpoints/
