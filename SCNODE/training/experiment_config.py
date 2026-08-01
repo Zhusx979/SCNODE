@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import argparse
 import importlib
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -26,6 +28,54 @@ class ModelSpec:
                 f"Install the missing dependency first. Original error: {exc}"
             ) from exc
         return getattr(module, self.factory_name)
+
+
+@dataclass(frozen=True)
+class ExperimentRuntimeConfig:
+    """Runtime-only settings consumed by the reusable training loop."""
+
+    output_root: Path | str = "artifacts/experiments"
+    learning_rate: float = 1e-3
+    use_tqdm: bool = True
+    train_log_interval: int = 20
+    is_ode: bool = False
+    full_report: bool = True
+    save_report_pth: bool = True
+    generate_visualizations: bool = True
+    generate_cam: bool = True
+    cam_samples_per_class: int = 1
+    cam_noise_samples: int = 8
+    cam_noise_sigma: float = 0.1
+    cam_target_layer: str = ""
+    collect_ode_diagnostics: bool = False
+    evaluate_test_each_epoch: bool = False
+
+    def to_dict(self) -> dict:
+        """Return a JSON-serializable copy for per-run provenance."""
+        payload = asdict(self)
+        payload["output_root"] = str(payload["output_root"])
+        return payload
+
+
+def runtime_config_from_args(parsed_args: argparse.Namespace) -> ExperimentRuntimeConfig:
+    """Adapt the legacy command line namespace to the reusable trainer API."""
+    return ExperimentRuntimeConfig(
+        output_root=parsed_args.folder_name,
+        learning_rate=parsed_args.lr,
+        use_tqdm=parsed_args.use_tqdm,
+        train_log_interval=parsed_args.train_log_interval,
+        is_ode=parsed_args.is_ode,
+        full_report=parsed_args.full_report,
+        save_report_pth=parsed_args.save_report_pth,
+        generate_visualizations=parsed_args.generate_visualizations,
+        generate_cam=parsed_args.generate_cam,
+        cam_samples_per_class=parsed_args.cam_samples_per_class,
+        cam_noise_samples=parsed_args.cam_noise_samples,
+        cam_noise_sigma=parsed_args.cam_noise_sigma,
+        cam_target_layer=parsed_args.cam_target_layer,
+        collect_ode_diagnostics=parsed_args.collect_ode_diagnostics or parsed_args.is_ode,
+        evaluate_test_each_epoch=False,
+    )
 
 
 AVAILABLE_MODELS = {
@@ -89,6 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cam_noise_samples", type=int, default=8)
     parser.add_argument("--cam_noise_sigma", type=float, default=0.1)
     parser.add_argument("--cam_target_layer", type=str, default="")
+    parser.add_argument("--collect_ode_diagnostics", type=_bool_argument, default=False)
     parser.add_argument("--folder_name", type=str, default="artifacts/experiments")
     parser.add_argument("--raw_data_root", type=str, default=str(get_default_raw_dataset_root()))
     parser.add_argument("--prepared_data_root", type=str, default="artifacts/datasets/bm_21class_split")
@@ -110,5 +161,7 @@ def get_selected_models(model_names: list[str]) -> list[tuple[ModelSpec, str]]:
 
 
 parser = build_parser()
-args = parser.parse_args()
+# Keep legacy module consumers working while allowing this module to be imported
+# by test runners and other tools that have their own command line flags.
+args, _unknown_args = parser.parse_known_args()
 models = get_selected_models(args.model_names)

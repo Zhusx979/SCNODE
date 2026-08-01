@@ -3,8 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 import abc
+from typing import Optional
 
 from torchdiffeq import odeint, odeint_adjoint
+
+from .config import ScnodeConfig
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 from torch.autograd import Variable
@@ -124,7 +127,7 @@ def odesolver_adjoint(func, z0, options = None):
 
 
 def norm(dim):
-    return nn.GroupNorm(min(32, dim), dim)
+    return nn.GroupNorm(math.gcd(32, dim), dim)
 
 
 
@@ -385,17 +388,58 @@ class Conv2dTime(nn.Conv2d):
         t_and_x = torch.cat([t_img, x], 1)
         return super(Conv2dTime, self).forward(t_and_x)
 
+
+class FourierFiLMConv2d(nn.Module):
+    """Apply a time-conditioned affine modulation to convolution outputs."""
+
+    def __init__(self, in_channels, out_channels, *args, **kwargs):
+        super(FourierFiLMConv2d, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, *args, **kwargs)
+        hidden_channels = max(8, out_channels)
+        self.time_affine = nn.Sequential(
+            nn.Linear(2, hidden_channels),
+            nn.SiLU(),
+            nn.Linear(hidden_channels, 2 * out_channels),
+        )
+
+    def forward(self, t, x):
+        t = t.reshape(1).to(device=x.device, dtype=x.dtype)
+        time_features = torch.stack(
+            [torch.sin(2 * math.pi * t), torch.cos(2 * math.pi * t)], dim=-1
+        )
+        gamma, beta = self.time_affine(time_features).chunk(2, dim=-1)
+        out = self.conv(x)
+        return out * (1 + gamma.view(1, -1, 1, 1)) + beta.view(1, -1, 1, 1)
+
 class ODEBlock(nn.Module):
-    def __init__(self, odefunc, Nt=2, method='euler', augment_dim=1):
+    def __init__(self, odefunc, Nt=None, method=None, augment_dim=None, config=None):
         super(ODEBlock, self).__init__()
         self.odefunc = odefunc
-        self.augment_dim = augment_dim
-        self.options = {'Nt': int(Nt), 'method': method}  # 初始化 method 属性
-        self.method = method  # 将 method 属性单独赋值
+        if config is None:
+            config = ScnodeConfig(
+                solver=method if method is not None else "rk4",
+                ode_steps=Nt if Nt is not None else 4,
+                augment_dim=augment_dim if augment_dim is not None else 1,
+            )
+        self.config = config
+        self.augment_dim = config.augment_dim
+        self.options = {'Nt': config.ode_steps, 'method': config.solver}
+        self.method = config.solver
+        self.solver_options = (
+            {'step_size': 1.0 / config.ode_steps}
+            if config.solver in {'euler', 'rk4'}
+            else None
+        )
+        integration_time = (
+            torch.linspace(0.0, 1.0, config.ode_steps + 1)
+            if config.solver in {'euler', 'rk4'}
+            else torch.tensor([0.0, 1.0])
+        )
+        self.register_buffer('integration_time', integration_time)
 
-    def forward(self, x, eval_times=None):
+    def forward(self, x, eval_times=None, zero_auxiliary=False, return_states=False):
         if eval_times is None:
-            integration_time = torch.tensor([0, 1]).float().type_as(x)
+            integration_time = self.integration_time.type_as(x)
         else:
             integration_time = eval_times.type_as(x)
 
@@ -406,8 +450,22 @@ class ODEBlock(nn.Module):
             aug = torch.zeros(batch_size, self.augment_dim, height, width, device=x.device, dtype=x.dtype)
             x = torch.cat([x, aug], dim=1)  # 通道数变为 dim + augment_dim
 
-        # out = odeint_adjoint(self.odefunc, x, integration_time, method=self.method,rtol=1e-3, atol=1e-3)[-1]
-        out = odeint(self.odefunc, x, integration_time, method=self.method,rtol=1e-3, atol=1e-3)[-1]
+        solver_kwargs = {
+            'method': self.method,
+            'rtol': self.config.rtol,
+            'atol': self.config.atol,
+        }
+        if self.solver_options is not None:
+            solver_kwargs['options'] = self.solver_options
+        states = odeint(self.odefunc, x, integration_time, **solver_kwargs)
+        if return_states:
+            return states
+        out = states[-1]
+        if zero_auxiliary and self.augment_dim > 0:
+            main, auxiliary = torch.split(
+                out, [out.shape[1] - self.augment_dim, self.augment_dim], dim=1
+            )
+            out = torch.cat((main, torch.zeros_like(auxiliary)), dim=1)
         return out
 
 
@@ -447,47 +505,96 @@ class BasicBlock(nn.Module):
 class BasicBlock2(nn.Module):
     expansion = 1
 
-    def __init__(self, dim, num_filters=64,augment_dim=1):
+    def __init__(self, dim, num_filters=64,augment_dim=1, time_mode='concat'):
         super(BasicBlock2, self).__init__()
         self.nfe = 0
         self.dim = dim
         self.in_planes = dim
         self.augment_dim = augment_dim
+        self.time_mode = time_mode
         self.total_in_planes = dim+self.augment_dim
-        self.conv1 = Conv2dTime(self.total_in_planes, num_filters,
-                                kernel_size=1, stride=1, padding=0)
-
-        # self.bn1 = nn.BatchNorm2d(num_filters)
-        self.bn1 = TWBN(num_filters)
-        self.conv2 = Conv2dTime(num_filters, num_filters,
-                                kernel_size=3, stride=1, padding=1)
-
-        # self.bn2 = nn.BatchNorm2d(num_filters)
-        self.bn2 = TWBN(num_filters)
+        if time_mode == 'none':
+            self.conv1 = nn.Conv2d(self.total_in_planes, num_filters,
+                                   kernel_size=1, stride=1, padding=0)
+            self.conv2 = nn.Conv2d(num_filters, num_filters,
+                                   kernel_size=3, stride=1, padding=1)
+        elif time_mode == 'concat':
+            self.conv1 = Conv2dTime(self.total_in_planes, num_filters,
+                                    kernel_size=1, stride=1, padding=0)
+            self.conv2 = Conv2dTime(num_filters, num_filters,
+                                    kernel_size=3, stride=1, padding=1)
+        elif time_mode == 'fourier_film':
+            self.conv1 = FourierFiLMConv2d(self.total_in_planes, num_filters,
+                                           kernel_size=1, stride=1, padding=0)
+            self.conv2 = FourierFiLMConv2d(num_filters, num_filters,
+                                           kernel_size=3, stride=1, padding=1)
+        else:
+            raise ValueError('Unsupported time_mode: {}'.format(time_mode))
+        # Stateless normalization keeps solver evaluations comparable across time modes.
+        self.bn1 = norm(num_filters)
+        self.bn2 = norm(num_filters)
         self.shortcut = nn.Sequential()
+
+    def _apply_conv(self, conv, t, x):
+        return conv(x) if self.time_mode == 'none' else conv(t, x)
+
+    def _apply_norm(self, norm_layer, t, x):
+        return norm_layer(x)
 
     def forward(self, t, x):
         self.nfe += 1
         # 这里的x已经加上了augment_dim个零通道，为了残差连接，num_filters 必须= dim + augment_dim
-        out = self.conv1(t,x)
-        out = F.relu(self.bn1(out,t))
-        out = self.conv2(t,out)
-        out = self.bn2(out,t)
+        out = self._apply_conv(self.conv1, t, x)
+        out = F.relu(self._apply_norm(self.bn1, t, out))
+        out = self._apply_conv(self.conv2, t, out)
+        out = self._apply_norm(self.bn2, t, out)
         out += self.shortcut(x)
         out = F.relu(out)
         return out
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=10, ODEBlock_=ODEBlock,  augment_dim=1):
+    def __init__(self, block, num_blocks, num_classes=10, ODEBlock_=ODEBlock,
+                 augment_dim=None, config=None):
         super(ResNet, self).__init__()
+        if config is None:
+            config = ScnodeConfig(augment_dim=1 if augment_dim is None else augment_dim)
+        elif augment_dim is not None and augment_dim != config.augment_dim:
+            raise ValueError('augment_dim must match config.augment_dim when both are provided')
         self.in_planes = 64
         self.ODEBlock = ODEBlock_
-        self.augment_dim = augment_dim
+        self.config = config
+        self.augment_dim = config.augment_dim
+        self.ode_entry_size = config.ode_entry_size
+        self._first_ode_input_shape = None
+        self._last_ode_entry_metadata = {
+            'downsampling_applied': None,
+            'downsampling_bypassed': None,
+            'resize_applied': None,
+        }
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.conv_cifar10 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)#对于cifar10
         self.conv_BM = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)#对于cifar10
         self.bn1 = nn.BatchNorm2d(64)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        # The BM stem maps 224x224 images to 112x112.  Repeating the chosen
+        # stride-two operator reaches each requested ODE grid directly, rather
+        # than applying one operator followed by a shared adaptive-average pool.
+        self.entry_downsample_stages = int(math.log2(112 // config.ode_entry_size))
+        if config.downsampling == 'maxpool':
+            entry_layers = [nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+                            for _ in range(self.entry_downsample_stages)]
+        elif config.downsampling == 'avgpool':
+            entry_layers = [nn.AvgPool2d(kernel_size=3, stride=2, padding=1)
+                            for _ in range(self.entry_downsample_stages)]
+        else:
+            entry_layers = [
+                nn.Sequential(
+                    nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1, bias=False),
+                    nn.BatchNorm2d(64),
+                )
+                for _ in range(self.entry_downsample_stages)
+            ]
+        self.entry_downsample = nn.Sequential(*entry_layers) if entry_layers else nn.Identity()
+        self.maxpool = self.entry_downsample
 
         # Layer 1
         self.layer1 = self._make_layer(out_planes=64, num_blocks=num_blocks[0] - 1, stride=1)
@@ -499,6 +606,65 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(out_planes=512, num_blocks=num_blocks[3] - 1, stride=2)
         # Linear layer
         self.linear = nn.Linear((512+self.augment_dim) * block.expansion, num_classes)
+
+    @property
+    def first_ode_input_shape(self):
+        """Spatial shape received by the first ODE block during the latest forward path."""
+        return self._first_ode_input_shape
+
+    @property
+    def ode_entry_metadata(self):
+        """Describe the runtime policy and its outcome for the latest ODE entry."""
+        return {
+            'target_spatial_size': self.ode_entry_size,
+            'configured_downsampling': self.config.downsampling,
+            'downsampling_policy': 'apply only when it does not undershoot the target',
+            'resize_policy': 'adaptive average pooling for downscaling only',
+            **self._last_ode_entry_metadata,
+        }
+
+    def _can_apply_entry_downsample(self, x):
+        """Keep the configured operator only when its stride-two output reaches the target."""
+        height, width = x.shape[-2:]
+        target = self.ode_entry_size
+        return (
+            self.entry_downsample_stages > 0
+            and height >= target * (2 ** self.entry_downsample_stages)
+            and width >= target * (2 ** self.entry_downsample_stages)
+        )
+
+    def _prepare_ode_entry(self, x):
+        """Apply the configured entry operator and a downscale-only target resize."""
+        downsampling_applied = self._can_apply_entry_downsample(x)
+        if downsampling_applied:
+            x = self.entry_downsample(x)
+
+        height, width = x.shape[-2:]
+        resize_applied = (
+            height >= self.ode_entry_size
+            and width >= self.ode_entry_size
+            and (height != self.ode_entry_size or width != self.ode_entry_size)
+        )
+        if resize_applied:
+            x = F.adaptive_avg_pool2d(
+                x, (self.ode_entry_size, self.ode_entry_size)
+            )
+
+        self._last_ode_entry_metadata = {
+            'downsampling_applied': downsampling_applied,
+            'downsampling_bypassed': not downsampling_applied,
+            'resize_applied': resize_applied,
+        }
+        return x
+
+    def forward_to_first_ode_input(self, x):
+        """Run the stem through the residual block immediately preceding the first ODE."""
+        out = F.relu(self.bn1(self.conv_BM(x)))
+        out = self._prepare_ode_entry(out)
+        out = self.layer1[0](out)
+        self._first_ode_input_shape = tuple(out.shape[-2:])
+        return out
+
     def _make_layer(self, out_planes, num_blocks, stride):
         layers = []
         strides = [stride] + [1] * (num_blocks - 1)
@@ -506,20 +672,68 @@ class ResNet(nn.Module):
             layers.append(BasicBlock(self.in_planes, out_planes, stride))
             self.in_planes = out_planes * BasicBlock.expansion
             current_out_planes = out_planes + self.augment_dim #决定了num_filters
-            block = BasicBlock2(self.in_planes, num_filters=current_out_planes,augment_dim=self.augment_dim)
-            layers.append(self.ODEBlock(block,augment_dim=self.augment_dim))
+            block = BasicBlock2(self.in_planes, num_filters=current_out_planes,
+                                augment_dim=self.augment_dim, time_mode=self.config.time_mode)
+            if self.ODEBlock is ODEBlock:
+                layers.append(self.ODEBlock(block, config=self.config))
+            else:
+                layers.append(self.ODEBlock(block, augment_dim=self.augment_dim))
             self.in_planes = current_out_planes
         return nn.Sequential(*layers)
 
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv_BM(x)))
-        out = self.maxpool(out)#针对于224图像
+    def _forward_layers(
+        self, layers, x, zero_auxiliary=False, terminal_ode_block=None
+    ):
+        for layer in layers:
+            if isinstance(layer, ODEBlock):
+                x = layer(
+                    x,
+                    zero_auxiliary=zero_auxiliary and layer is terminal_ode_block,
+                )
+            else:
+                x = layer(x)
+        return x
 
-        # out = F.relu(self.bn1(self.conv_cifar10(x)))
-        out = self.layer1(out)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
+    def forward_with_trajectory(self, x, time_points):
+        """Return logits and per-ODE-block computational trajectories.
+
+        These are solver states inside one trained classifier, not longitudinal
+        observations of a biological cell.
+        """
+        out = self.forward_to_first_ode_input(x)
+        trajectories = {}
+        stages = (("layer1", self.layer1[1:]), ("layer2", self.layer2),
+                  ("layer3", self.layer3), ("layer4", self.layer4))
+        for stage_name, stage in stages:
+            for index, layer in enumerate(stage):
+                if isinstance(layer, ODEBlock):
+                    states = layer(out, eval_times=time_points, return_states=True)
+                    trajectories[f"{stage_name}_{index}"] = states
+                    out = states[-1]
+                else:
+                    out = layer(out)
+        out = self.pool(out).view(out.size(0), -1)
+        return self.linear(out), trajectories
+
+    def forward(self, x, zero_auxiliary=False):
+        out = self.forward_to_first_ode_input(x)
+        stages = (self.layer1[1:], self.layer2, self.layer3, self.layer4)
+        terminal_ode_block = next(
+            (
+                layer
+                for stage in reversed(stages)
+                for layer in reversed(stage)
+                if isinstance(layer, ODEBlock)
+            ),
+            None,
+        )
+        for stage in stages:
+            out = self._forward_layers(
+                stage,
+                out,
+                zero_auxiliary=zero_auxiliary,
+                terminal_ode_block=terminal_ode_block,
+            )
         # out = F.avg_pool2d(out, 4)
         out = self.pool(out)
         out = out.view(out.size(0), -1)
@@ -542,14 +756,17 @@ class ResNet(nn.Module):
             for block in layer:
                 block.nfe = value
 
-def Get_time_AnodeV2_ResNet18(num_classes):
-    return ResNet(BasicBlock, [2, 2, 2, 2], ODEBlock_=ODEBlock, num_classes=num_classes,augment_dim=1)
+def Get_time_AnodeV2_ResNet18(num_classes, config: Optional[ScnodeConfig] = None):
+    return ResNet(BasicBlock, [2, 2, 2, 2], ODEBlock_=ODEBlock, num_classes=num_classes,
+                  config=config)
 # 层数之和计算是4（和-4）=目标层数-2
-def Get_time_AnodeV2_ResNet34(num_classes):
-    return ResNet(BasicBlock, [2, 3, 5, 2], ODEBlock_=ODEBlock, num_classes=num_classes,augment_dim=1)
+def Get_time_AnodeV2_ResNet34(num_classes, config: Optional[ScnodeConfig] = None):
+    return ResNet(BasicBlock, [2, 3, 5, 2], ODEBlock_=ODEBlock, num_classes=num_classes,
+                  config=config)
 
-def Get_time_AnodeV2_ResNet50(num_classes):
-    return ResNet(BasicBlock, [3, 4, 6, 3], ODEBlock_=ODEBlock, num_classes=num_classes,augment_dim=1)
+def Get_time_AnodeV2_ResNet50(num_classes, config: Optional[ScnodeConfig] = None):
+    return ResNet(BasicBlock, [3, 4, 6, 3], ODEBlock_=ODEBlock, num_classes=num_classes,
+                  config=config)
 
 def lr_schedule(lr, epoch):
     optim_factor = 0

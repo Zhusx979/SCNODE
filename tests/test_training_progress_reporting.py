@@ -1,10 +1,76 @@
+import json
 from pathlib import Path
+import sys
+
+import numpy as np
+import torch
+from torch import nn
+
+sys.argv = [sys.argv[0]]
 
 from SCNODE.training.progress_reporting import (
     append_epoch_metrics_row,
     build_epoch_summary_lines,
     format_seconds,
 )
+from SCNODE.training.experiment_config import ExperimentRuntimeConfig
+from SCNODE.training.classification_trainer import train_val_test_model
+
+
+class _AlternatingTrainLoader:
+    """Yields labels that make the final epoch worse than the first one."""
+
+    class _Dataset:
+        skipped_image_count = 0
+
+    dataset = _Dataset()
+
+    def __init__(self) -> None:
+        self.epoch = 0
+
+    def __len__(self) -> int:
+        return 1
+
+    def __iter__(self):
+        label = 0 if self.epoch == 0 else 1
+        self.epoch += 1
+        yield torch.tensor([[1.0]]), torch.tensor([label])
+
+
+class _StaticLoader:
+    class _Dataset:
+        skipped_image_count = 0
+
+    dataset = _Dataset()
+
+    def __len__(self) -> int:
+        return 1
+
+    def __iter__(self):
+        yield torch.tensor([[1.0], [1.0]]), torch.tensor([0, 1])
+
+
+class _CountingStaticLoader(_StaticLoader):
+    def __init__(self) -> None:
+        self.iterations = 0
+
+    def __iter__(self):
+        self.iterations += 1
+        yield from super().__iter__()
+
+
+class _SignClassifier(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(0.1))
+        self.register_buffer("train_calls", torch.tensor(0))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        if self.training:
+            self.train_calls.add_(1)
+        sign = 1.0 if int(self.train_calls.item()) == 1 else -1.0
+        logits = torch.tensor([sign, -sign], device=inputs.device).expand(inputs.size(0), -1)
+        return logits + self.weight * 0.0
 
 
 def test_format_seconds_handles_minutes_and_seconds() -> None:
@@ -68,3 +134,73 @@ def test_append_epoch_metrics_row_creates_csv_with_header(tmp_path: Path) -> Non
     contents = csv_path.read_text(encoding="utf-8")
     assert "epoch,train_loss,train_accuracy" in contents
     assert "1,0.5,80.0,0.4,82.0,81.0" in contents
+
+
+def test_epoch_metrics_include_ode_diagnostics(tmp_path: Path) -> None:
+    csv_path = tmp_path / "metrics.csv"
+    append_epoch_metrics_row(
+        csv_path,
+        {
+            "epoch": 1,
+            "mean_nfe_forward": 3.0,
+            "mean_nfe_backward": 4.0,
+            "peak_cuda_memory_bytes": 0,
+            "max_state_l2": 0.0,
+            "max_gradient_l2": 0.0,
+            "nonfinite_batch_count": 0,
+        },
+    )
+
+    contents = csv_path.read_text(encoding="utf-8")
+    assert "mean_nfe_forward" in contents
+    assert "nonfinite_batch_count" in contents
+
+
+def test_training_writes_runtime_artifacts_and_uses_validation_best_checkpoint(tmp_path: Path) -> None:
+    runtime_config = ExperimentRuntimeConfig(
+        output_root=tmp_path,
+        learning_rate=1.0,
+        use_tqdm=False,
+        train_log_interval=1,
+        full_report=False,
+        generate_visualizations=False,
+        generate_cam=False,
+    )
+    model = _SignClassifier()
+
+    train_val_test_model(
+        model=model,
+        trainloader=_AlternatingTrainLoader(),
+        valloader=_StaticLoader(),
+        testloader=_StaticLoader(),
+        criterion=nn.CrossEntropyLoss(),
+        device=torch.device("cpu"),
+        name="tiny",
+        class_names=["negative", "positive"],
+        num_epochs=2,
+        runtime_config=runtime_config,
+    )
+
+    model_dir = tmp_path / "tiny"
+    assert (model_dir / "resolved_config.json").is_file()
+    assert (model_dir / "best_checkpoint.pt").is_file()
+    assert (model_dir / "test_predictions.npz").is_file()
+    assert json.loads((model_dir / "resolved_config.json").read_text(encoding="utf-8"))["learning_rate"] == 1.0
+    assert np.load(model_dir / "test_predictions.npz")["predictions"].tolist() == [0, 0]
+
+
+def test_training_evaluates_test_set_once_after_validation_selection(tmp_path: Path) -> None:
+    runtime_config = ExperimentRuntimeConfig(
+        output_root=tmp_path, learning_rate=1.0, use_tqdm=False, full_report=False,
+        generate_visualizations=False, generate_cam=False,
+    )
+    testloader = _CountingStaticLoader()
+
+    train_val_test_model(
+        model=_SignClassifier(), trainloader=_AlternatingTrainLoader(),
+        valloader=_StaticLoader(), testloader=testloader, criterion=nn.CrossEntropyLoss(),
+        device=torch.device("cpu"), name="no_test_leakage",
+        class_names=["negative", "positive"], num_epochs=2, runtime_config=runtime_config,
+    )
+
+    assert testloader.iterations == 1

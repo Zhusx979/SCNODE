@@ -11,7 +11,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from SCNODE.training.classification_trainer import conv_init, train_val_test_model
-from SCNODE.training.experiment_config import args, models
+from SCNODE.training.experiment_config import args, models, runtime_config_from_args
 
 # 数据集存储路径
 data_dir = str(ROOT_DIR / "SCNODE" / "archive" / "datasets" / "cifar10_data")
@@ -65,6 +65,7 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False  # 关闭自动优化以确保一致性
 def main():
     set_seed(42)
+    runtime_config = runtime_config_from_args(args)
     train_dataset, val_dataset, test_dataset, trainloader, valloader, testloader = build_cifar10_dataloaders()
 
     print(f'Train dataset size: {len(train_dataset)}')
@@ -94,6 +95,7 @@ def main():
                 device,
                 name,
                 class_names,
+                runtime_config=runtime_config,
                 num_epochs=args.num_epochs
             )
             print(f"完成模型 {name} 的训练")

@@ -17,7 +17,7 @@ from blood_experiment.data import (
     prepare_experiment_splits,
     save_dataset_summary,
 )
-from SCNODE.training.experiment_config import args, models
+from SCNODE.training.experiment_config import args, models, runtime_config_from_args
 from SCNODE.training.classification_trainer import conv_init, train_val_test_model
 
 
@@ -89,6 +89,7 @@ def build_model(model_spec, num_classes: int, device: torch.device) -> nn.Module
 def main() -> None:
     set_seed(args.seed)
     device = torch.device("cuda" if args.gpus and torch.cuda.is_available() else "cpu")
+    runtime_config = runtime_config_from_args(args)
 
     dataloaders, class_names, manifest_path = build_dataloaders()
     print(f"Manifest prepared at: {manifest_path}")
@@ -114,6 +115,7 @@ def main() -> None:
             name=name,
             class_names=class_names,
             num_epochs=args.num_epochs,
+            runtime_config=runtime_config,
         )
         print(f"Completed training for model: {name}")
 

@@ -1,0 +1,2 @@
+# Test-only dependency. The deep_learning environment already provides torchdiffeq.
+pytest>=8,<9
