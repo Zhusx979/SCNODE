@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import random
 import warnings
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
 from PIL import Image, ImageFile, UnidentifiedImageError
 
 
@@ -15,6 +17,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+DEFAULT_TARGET_SAMPLES_PER_CLASS = 5000
 
 
 def get_default_raw_dataset_root() -> Path:
@@ -114,12 +117,14 @@ def create_split_manifest(
     val_ratio: float,
     test_ratio: float,
     seed: int,
+    max_samples_per_class: int | None = DEFAULT_TARGET_SAMPLES_PER_CLASS,
 ) -> Path:
     raw_root_path = Path(raw_root)
     output_dir_path = Path(output_dir)
     output_dir_path.mkdir(parents=True, exist_ok=True)
 
     manifest_path = output_dir_path / "split_manifest.csv"
+    selection_rows: list[dict[str, str | int]] = []
     rows: list[dict[str, str | int]] = []
     generator = random.Random(seed)
 
@@ -128,6 +133,21 @@ def create_split_manifest(
         if not class_paths:
             continue
         generator.shuffle(class_paths)
+        original_count = len(class_paths)
+        if max_samples_per_class is not None:
+            if max_samples_per_class <= 0:
+                raise ValueError("max_samples_per_class must be positive or None.")
+            class_paths = class_paths[:max_samples_per_class]
+        for image_path in class_paths:
+            selection_rows.append(
+                {
+                    "class_name": class_name,
+                    "class_index": class_index,
+                    "image_path": str(image_path),
+                    "original_count": original_count,
+                    "selection": "downsampled" if original_count > len(class_paths) else "retained",
+                }
+            )
         counts = allocate_split_counts(
             len(class_paths),
             train_ratio=train_ratio,
@@ -143,6 +163,44 @@ def create_split_manifest(
         )
         writer.writeheader()
         writer.writerows(rows)
+
+    with (output_dir_path / "subset_selection.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["class_name", "class_index", "image_path", "original_count", "selection"],
+        )
+        writer.writeheader()
+        writer.writerows(selection_rows)
+
+    metadata_path = output_dir_path / "split_manifest_config.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "train_ratio": train_ratio,
+                "val_ratio": val_ratio,
+                "test_ratio": test_ratio,
+                "seed": seed,
+                "max_samples_per_class": max_samples_per_class,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    (output_dir_path / "subset_metadata.json").write_text(
+        json.dumps(
+            {
+                "selection_seed": seed,
+                "max_samples_per_class": max_samples_per_class,
+                "class_count": len(discover_class_names(raw_root_path)),
+                "selection_policy": "downsample classes above the cap; retain all classes at or below the cap",
+                "image_storage": "manifest references original files; no image copies are created",
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
 
     return manifest_path
 
@@ -179,15 +237,30 @@ def load_manifest_records(
 def prepare_experiment_splits(
     raw_root: Path | str,
     output_dir: Path | str,
-    train_ratio: float = 0.7,
-    val_ratio: float = 0.15,
-    test_ratio: float = 0.15,
+    train_ratio: float = 0.8,
+    val_ratio: float = 0.1,
+    test_ratio: float = 0.1,
     seed: int = 42,
+    max_samples_per_class: int | None = DEFAULT_TARGET_SAMPLES_PER_CLASS,
 ) -> Path:
     destination = Path(output_dir)
     manifest_path = destination / "split_manifest.csv"
-    if manifest_path.exists():
-        return manifest_path
+    metadata_path = destination / "split_manifest_config.json"
+    expected = {
+        "train_ratio": train_ratio,
+        "val_ratio": val_ratio,
+        "test_ratio": test_ratio,
+        "seed": seed,
+        "max_samples_per_class": max_samples_per_class,
+    }
+    required_metadata = destination / "subset_metadata.json"
+    required_selection = destination / "subset_selection.csv"
+    if manifest_path.exists() and metadata_path.exists() and required_metadata.exists() and required_selection.exists():
+        try:
+            if json.loads(metadata_path.read_text(encoding="utf-8")) == expected:
+                return manifest_path
+        except (OSError, ValueError):
+            pass
     return create_split_manifest(
         raw_root=raw_root,
         output_dir=destination,
@@ -195,6 +268,7 @@ def prepare_experiment_splits(
         val_ratio=val_ratio,
         test_ratio=test_ratio,
         seed=seed,
+        max_samples_per_class=max_samples_per_class,
     )
 
 
@@ -234,8 +308,16 @@ class ManifestImageDataset:
         manifest_path: Path | str,
         split: str,
         transform=None,
+        target_samples_per_class: int | None = None,
+        seed: int = 42,
     ) -> None:
         self.records = load_manifest_records(manifest_path, split=split)
+        if target_samples_per_class is not None:
+            if target_samples_per_class <= 0:
+                raise ValueError("target_samples_per_class must be positive or None.")
+            self.records = _upsample_records(
+                self.records, target_samples_per_class=target_samples_per_class, seed=seed
+            )
         self.transform = transform
         self.classes = get_class_names_from_manifest(manifest_path)
         self._bad_image_paths: set[str] = set()
@@ -282,7 +364,71 @@ class ManifestImageDataset:
         )
 
 
-def build_default_transforms(image_size: int = 224):
+def _upsample_records(
+    records: list[ManifestRecord], target_samples_per_class: int, seed: int
+) -> list[ManifestRecord]:
+    grouped: dict[int, list[ManifestRecord]] = {}
+    for record in records:
+        grouped.setdefault(record.class_index, []).append(record)
+    generator = random.Random(seed)
+    balanced: list[ManifestRecord] = []
+    for class_index in sorted(grouped):
+        class_records = grouped[class_index]
+        if len(class_records) >= target_samples_per_class:
+            balanced.extend(class_records[:target_samples_per_class])
+            continue
+        balanced.extend(class_records)
+        current_count = len(class_records)
+        while current_count < target_samples_per_class:
+            balanced.append(generator.choice(class_records))
+            current_count += 1
+    return balanced
+
+
+class MacenkoTellezStainAugmentation:
+    def __init__(self, sigma: float = 0.2, bias: float = 0.2, probability: float = 1.0) -> None:
+        self.sigma = sigma
+        self.bias = bias
+        self.probability = probability
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        if random.random() > self.probability:
+            return image
+        try:
+            rgb = np.asarray(image.convert("RGB"), dtype=np.float32)
+            optical_density = -np.log((rgb + 1.0) / 256.0)
+            mask = optical_density.reshape(-1, 3).mean(axis=1) > 0.15
+            if mask.sum() < 10:
+                return image
+            od = optical_density.reshape(-1, 3)[mask]
+            covariance = np.cov(od, rowvar=False)
+            eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+            basis = eigenvectors[:, np.argsort(eigenvalues)[-2:]]
+            projections = od @ basis
+            angles = np.arctan2(projections[:, 1], projections[:, 0])
+            vectors = []
+            for percentile in (1, 99):
+                theta = np.percentile(angles, percentile)
+                vector = basis @ np.asarray([np.cos(theta), np.sin(theta)])
+                vector /= np.linalg.norm(vector) + 1e-8
+                vectors.append(vector)
+            stain_matrix = np.stack(vectors, axis=0)
+            if stain_matrix[0, 0] < stain_matrix[1, 0]:
+                stain_matrix = stain_matrix[::-1]
+            concentrations = optical_density.reshape(-1, 3) @ np.linalg.pinv(stain_matrix)
+            scales = np.exp(np.random.normal(0.0, self.sigma, size=(1, 2)))
+            offsets = np.random.normal(0.0, self.bias, size=(1, 2))
+            concentrations = np.maximum(concentrations * scales + offsets, 0.0)
+            reconstructed = concentrations @ stain_matrix
+            augmented = np.clip(255.0 * np.exp(-reconstructed), 0, 255).reshape(rgb.shape)
+            if not np.isfinite(augmented).all() or augmented.std() < 1e-3:
+                return image
+            return Image.fromarray(augmented.astype(np.uint8), mode="RGB")
+        except (ImportError, FloatingPointError, ValueError, np.linalg.LinAlgError):
+            return image
+
+
+def build_default_transforms(image_size: int = 224, paper_augmentation: bool = True):
     try:
         from torchvision import transforms
     except ImportError as exc:
@@ -294,14 +440,14 @@ def build_default_transforms(image_size: int = 224):
     train_transform = transforms.Compose(
         [
             transforms.Resize((image_size, image_size)),
-            transforms.RandomRotation(5),
-            transforms.RandomResizedCrop(image_size, scale=(0.8, 1.0)),
-            transforms.ColorJitter(
-                brightness=0.2,
-                contrast=0.2,
-                saturation=0.2,
-                hue=0.2,
+            transforms.RandomAffine(
+                degrees=(-180, 0),
+                translate=(0.25, 0.25),
+                shear=(-20, 20),
             ),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            MacenkoTellezStainAugmentation() if paper_augmentation else transforms.Lambda(lambda image: image),
             transforms.ToTensor(),
             transforms.Normalize(
                 [0.485, 0.456, 0.406],

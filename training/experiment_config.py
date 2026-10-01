@@ -40,6 +40,9 @@ class ExperimentRuntimeConfig:
     weight_decay: float = 1e-4
     momentum: float = 0.9
     min_learning_rate: float = 0.0
+    balance_to_3000: bool = True
+    paper_augmentation: bool = True
+    max_samples_per_class: int = 3000
     use_tqdm: bool = True
     train_log_interval: int = 20
     is_ode: bool = False
@@ -69,6 +72,9 @@ def runtime_config_from_args(parsed_args: argparse.Namespace) -> ExperimentRunti
         weight_decay=parsed_args.weight_decay,
         momentum=parsed_args.momentum,
         min_learning_rate=parsed_args.min_learning_rate,
+        balance_to_3000=parsed_args.balance_to_3000,
+        paper_augmentation=parsed_args.paper_augmentation,
+        max_samples_per_class=parsed_args.max_samples_per_class,
         use_tqdm=parsed_args.use_tqdm,
         train_log_interval=parsed_args.train_log_interval,
         is_ode=parsed_args.is_ode,
@@ -174,6 +180,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--folder_name", type=str, default="artifacts/experiments")
     parser.add_argument("--raw_data_root", type=str, default=str(get_default_raw_dataset_root()))
     parser.add_argument("--prepared_data_root", type=str, default="artifacts/datasets/bm_21class_split")
+    parser.add_argument("--balance_to_3000", type=_bool_argument, default=True)
+    parser.add_argument("--paper_augmentation", type=_bool_argument, default=True)
+    parser.add_argument("--max_samples_per_class", type=int, default=3000)
     parser.add_argument("--train_ratio", type=float, default=0.8)
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--test_ratio", type=float, default=0.1)

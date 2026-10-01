@@ -21,7 +21,6 @@ from SCNODE.blood_experiment.data import (
 )
 from SCNODE.training.experiment_config import parse_experiment_args, runtime_config_from_args
 from SCNODE.training.classification_trainer import conv_init, train_val_test_model
-from SCNODE.training.long_tail_losses import build_long_tail_loss
 
 
 def set_seed(seed: int = 42) -> None:
@@ -42,14 +41,25 @@ def build_dataloaders(args) -> tuple[dict[str, DataLoader], list[str], Path]:
         val_ratio=args.val_ratio,
         test_ratio=args.test_ratio,
         seed=args.seed,
+        max_samples_per_class=args.max_samples_per_class if args.balance_to_3000 else None,
     )
     save_dataset_summary(
         manifest_path=manifest_path,
         output_path=Path(args.prepared_data_root) / "dataset_summary.csv",
     )
 
-    train_transform, eval_transform = build_default_transforms(args.image_size)
-    train_dataset = ManifestImageDataset(manifest_path, split="train", transform=train_transform)
+    train_transform, eval_transform = build_default_transforms(
+        args.image_size, paper_augmentation=args.paper_augmentation
+    )
+    train_dataset = ManifestImageDataset(
+        manifest_path,
+        split="train",
+        transform=train_transform,
+        target_samples_per_class=(
+            args.max_samples_per_class if args.balance_to_3000 else None
+        ),
+        seed=args.seed,
+    )
     val_dataset = ManifestImageDataset(manifest_path, split="val", transform=eval_transform)
     test_dataset = ManifestImageDataset(manifest_path, split="test", transform=eval_transform)
 
@@ -111,12 +121,10 @@ def main() -> None:
 
     for model_spec, name in models:
         print(f"Training model: {name}")
+        if name != "SCNODE_ResNet18":
+            raise ValueError("This BM protocol is defined for SCNODE_ResNet18 only.")
         model = build_model(model_spec, num_classes=len(class_names), device=device, args=args)
-        class_counts = torch.bincount(
-            torch.tensor([record.class_index for record in dataloaders["train"].dataset.records]),
-            minlength=len(class_names),
-        )
-        criterion = build_long_tail_loss(args.loss, class_counts, num_classes=len(class_names))
+        criterion = torch.nn.CrossEntropyLoss()
         train_val_test_model(
             model=model,
             trainloader=dataloaders["train"],

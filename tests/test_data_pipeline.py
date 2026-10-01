@@ -9,7 +9,39 @@ from SCNODE.blood_experiment.data import (
     create_split_manifest,
     discover_class_names,
     get_default_raw_dataset_root,
+    load_manifest_records,
 )
+
+
+def test_manifest_caps_classes_before_split_and_training_upsampling(tmp_path):
+    raw_root = tmp_path / "raw"
+    for class_name, count in (("major", 12), ("minor", 3)):
+        class_dir = raw_root / class_name
+        class_dir.mkdir(parents=True)
+        for index in range(count):
+            Image.new("RGB", (8, 8), color=(index, 20, 30)).save(class_dir / f"{index}.png")
+
+    manifest = create_split_manifest(
+        raw_root, tmp_path / "prepared", 0.8, 0.1, 0.1, seed=3, max_samples_per_class=10
+    )
+    records = load_manifest_records(manifest)
+    assert len(records) == 13
+    for class_name in ("major", "minor"):
+        class_records = [record for record in records if record.class_name == class_name]
+        assert len(class_records) == (10 if class_name == "major" else 3)
+        split_counts = [
+            sum(record.split == split for record in class_records)
+            for split in ("train", "val", "test")
+        ]
+        assert split_counts == ([8, 1, 1] if class_name == "major" else [1, 1, 1])
+
+    train_dataset = ManifestImageDataset(
+        manifest, split="train", target_samples_per_class=10, seed=3
+    )
+    counts = {class_index: 0 for class_index in (0, 1)}
+    for record in train_dataset.records:
+        counts[record.class_index] += 1
+    assert counts == {0: 10, 1: 10}
 
 
 def _make_fake_class(root: Path, class_name: str, count: int) -> None:
