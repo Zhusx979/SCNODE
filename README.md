@@ -5,23 +5,23 @@ SCNODE is a continuous-depth neural network framework for bone-marrow cytomorpho
 ## Project structure
 
 ```text
-.
-©À©¤©¤ SCNODE/
-©¦   ©À©¤©¤ models/
-©¦   ©¦   ©À©¤©¤ ode/
-©¦   ©¦   ©¦   ©À©¤©¤ scnode/          SCNODE, ANODE, ANODEV2, TConv, TW-BN, SAM
-©¦   ©¦   ©¦   ©À©¤©¤ odenet_variants.py  NODE comparison models
-©¦   ©¦   ©¦   ©¸©¤©¤ odenet_reference.py ODE reference implementation
-©¦   ©¦   ©À©¤©¤ cnn/                 ResNet and CNN comparison backbones
-©¦   ©¦   ©¸©¤©¤ baselines/           additional CNN and transformer baselines
-©¦   ©À©¤©¤ training/                reusable training code and experiment entry points
-©¦   ©À©¤©¤ experiments/             reviewer condition grids and experiment lifecycle
-©¦   ©À©¤©¤ diagnostics/             trajectories, solver checks, metrics, and statistics
-©¦   ©À©¤©¤ visualization/           multi-step UMAP and publication-oriented figures
-©¦   ©À©¤©¤ blood_experiment/        BM data loading, evaluation, CAM, and plotting
-©¦   ©¸©¤©¤ tests/                   model, configuration, data, diagnostic, and output tests
-©À©¤©¤ requirements-dev.txt         development and test dependencies
-©¸©¤©¤ README.md                    project overview and source map
+`-- SCNODE/
+    |-- models/
+    |   |-- ode/
+    |   |   |-- scnode/              SCNODE, ANODE, ANODEV2, TConv, TW-BN, SAM
+    |   |   |-- odenet_variants.py   NODE comparison models
+    |   |   `-- odenet_reference.py  ODE reference implementation
+    |   |-- cnn/                     ResNet and CNN comparison backbones
+    |   `-- baselines/               additional CNN and transformer baselines
+    |-- training/                    reusable training code and experiment entry points
+    |-- experiments/                 condition grids and experiment lifecycle
+    |-- diagnostics/                 trajectories, solver checks, metrics, and statistics
+    |-- visualization/               multi-step UMAP and figures
+    |-- blood_experiment/            BM data loading, evaluation, CAM, and plotting
+    `-- tests/                       model, configuration, data, diagnostic, and output tests
+|-- requirements-dev.txt            development and test dependencies
+`-- README.md                       project overview and source map
+```
 ```
 
 ## Model organization
