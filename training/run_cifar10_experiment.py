@@ -42,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--test_batch_size", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--learning_rate", type=float, default=1e-3)
+    parser.add_argument("--optimizer", choices=["adam", "adamw", "sgd", "rmsprop", "adagrad"], default="adam")
+    parser.add_argument("--scheduler", choices=["none", "cosine"], default="none")
+    parser.add_argument("--weight_decay", type=float, default=1e-4)
+    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--min_learning_rate", type=float, default=0.0)
     parser.add_argument("--data_root", type=Path, default=Path("artifacts/datasets/cifar10"))
     parser.add_argument("--output_root", type=Path, default=Path("artifacts/cifar10_experiments"))
     parser.add_argument("--no_download", action="store_false", dest="download", default=True)
@@ -123,6 +128,11 @@ def main() -> None:
     runtime_config = ExperimentRuntimeConfig(
         output_root=args.output_root,
         learning_rate=args.learning_rate,
+        optimizer=args.optimizer,
+        scheduler=args.scheduler,
+        weight_decay=args.weight_decay,
+        momentum=args.momentum,
+        min_learning_rate=args.min_learning_rate,
         collect_ode_diagnostics=True,
         evaluate_test_each_epoch=False,
     )

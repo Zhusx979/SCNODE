@@ -35,6 +35,11 @@ class ExperimentRuntimeConfig:
 
     output_root: Path | str = "artifacts/experiments"
     learning_rate: float = 1e-3
+    optimizer: str = "adam"
+    scheduler: str = "none"
+    weight_decay: float = 1e-4
+    momentum: float = 0.9
+    min_learning_rate: float = 0.0
     use_tqdm: bool = True
     train_log_interval: int = 20
     is_ode: bool = False
@@ -59,6 +64,11 @@ def runtime_config_from_args(parsed_args: argparse.Namespace) -> ExperimentRunti
     return ExperimentRuntimeConfig(
         output_root=parsed_args.folder_name,
         learning_rate=parsed_args.lr,
+        optimizer=parsed_args.optimizer,
+        scheduler=parsed_args.scheduler,
+        weight_decay=parsed_args.weight_decay,
+        momentum=parsed_args.momentum,
+        min_learning_rate=parsed_args.min_learning_rate,
         use_tqdm=parsed_args.use_tqdm,
         train_log_interval=parsed_args.train_log_interval,
         is_ode=parsed_args.is_ode,
@@ -138,6 +148,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--num_epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--optimizer", choices=["adam", "adamw", "sgd", "rmsprop", "adagrad"], default="adam")
+    parser.add_argument("--scheduler", choices=["none", "cosine"], default="none")
+    parser.add_argument("--weight_decay", type=float, default=1e-4)
+    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--min_learning_rate", type=float, default=0.0)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--test_batch_size", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=8)

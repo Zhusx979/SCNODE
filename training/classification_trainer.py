@@ -28,6 +28,7 @@ from SCNODE.training.progress_reporting import (
     build_epoch_summary_lines,
     format_seconds,
 )
+from SCNODE.training.optimizers import build_optimizer_and_scheduler
 
 try:
     from tqdm.auto import tqdm
@@ -286,7 +287,16 @@ def train_val_test_model(
     train_losses = []
     val_losses = []
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=runtime_config.learning_rate, weight_decay=1e-4)
+    optimizer, scheduler = build_optimizer_and_scheduler(
+        model.parameters(),
+        optimizer_name=runtime_config.optimizer,
+        scheduler_name=runtime_config.scheduler,
+        learning_rate=runtime_config.learning_rate,
+        weight_decay=runtime_config.weight_decay,
+        momentum=runtime_config.momentum,
+        num_epochs=num_epochs,
+        min_learning_rate=runtime_config.min_learning_rate,
+    )
     ode_collector = OdeMetricCollector() if runtime_config.collect_ode_diagnostics else None
     ode_hook_handles = register_ode_state_hooks(model, ode_collector) if ode_collector else []
 
@@ -567,6 +577,8 @@ def train_val_test_model(
                 bnfe_history=avg_bnfe,
                 collect_ode_diagnostics=runtime_config.collect_ode_diagnostics,
             )
+        if scheduler is not None:
+            scheduler.step()
 
     if not best_checkpoint_path.exists():
         torch.save(

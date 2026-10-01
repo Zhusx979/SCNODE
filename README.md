@@ -22,6 +22,7 @@ SCNODE is a continuous-depth neural network framework for bone-marrow cytomorpho
 |-- requirements-dev.txt            development and test dependencies
 `-- README.md                       project overview and source map
 ```
+
 ```
 
 ## Model organization
@@ -52,3 +53,4 @@ The shared SCNODE architecture settings are defined in `SCNODE/models/ode/scnode
 The BM dataset is not included in this repository. Its loader accepts an external class-folder dataset and creates local split metadata under the ignored `SCNODE/artifacts/` directory. CIFAR-10 is accessed through torchvision and is likewise kept under the local artifacts directory. No dataset, checkpoint, log, private path, user-identifying metadata, or generated result is part of the review source tree.
 
 The source code defines the procedures needed to regenerate the paper tables and figures; numerical results require the corresponding dataset, selected seeds, and trained checkpoints.
+```
