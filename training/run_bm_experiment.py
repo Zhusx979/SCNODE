@@ -21,6 +21,7 @@ from SCNODE.blood_experiment.data import (
 )
 from SCNODE.training.experiment_config import parse_experiment_args, runtime_config_from_args
 from SCNODE.training.classification_trainer import conv_init, train_val_test_model
+from SCNODE.training.long_tail_losses import build_long_tail_loss
 
 
 def set_seed(seed: int = 42) -> None:
@@ -111,7 +112,11 @@ def main() -> None:
     for model_spec, name in models:
         print(f"Training model: {name}")
         model = build_model(model_spec, num_classes=len(class_names), device=device, args=args)
-        criterion = torch.nn.CrossEntropyLoss()
+        class_counts = torch.bincount(
+            torch.tensor([record.class_index for record in dataloaders["train"].dataset.records]),
+            minlength=len(class_names),
+        )
+        criterion = build_long_tail_loss(args.loss, class_counts, num_classes=len(class_names))
         train_val_test_model(
             model=model,
             trainloader=dataloaders["train"],

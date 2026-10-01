@@ -291,6 +291,8 @@ def train_val_test_model(
     ode_hook_handles = register_ode_state_hooks(model, ode_collector) if ode_collector else []
 
     for epoch in range(num_epochs):
+        if hasattr(criterion, "set_epoch"):
+            criterion.set_epoch(epoch)
         model.train()
         epoch_start_time = time.time()
         running_train_loss = 0.0

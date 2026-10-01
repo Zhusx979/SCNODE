@@ -163,6 +163,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--test_ratio", type=float, default=0.1)
     parser.add_argument("--model_names", nargs="+", default=["ResNet18"])
+    parser.add_argument(
+        "--loss",
+        choices=["cross_entropy", "ldam_drw", "logit_adjustment", "balanced_softmax", "class_balanced_focal", "seesaw", "eql_v2"],
+        default="cross_entropy",
+    )
     return parser
 
 
