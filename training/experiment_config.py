@@ -42,7 +42,7 @@ class ExperimentRuntimeConfig:
     min_learning_rate: float = 0.0
     balance_to_3000: bool = True
     paper_augmentation: bool = True
-    max_samples_per_class: int = 3000
+    max_samples_per_class: int = 6000
     use_tqdm: bool = True
     train_log_interval: int = 20
     is_ode: bool = False
@@ -152,15 +152,15 @@ def _bool_argument(value):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num_epochs", type=int, default=100)
+    parser.add_argument("--num_epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--optimizer", choices=["adam", "adamw", "sgd", "rmsprop", "adagrad"], default="adam")
     parser.add_argument("--scheduler", choices=["none", "cosine"], default="none")
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--min_learning_rate", type=float, default=0.0)
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--test_batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--test_batch_size", type=int, default=256)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--image_size", type=int, default=224)
     parser.add_argument("--seed", type=int, default=42)
@@ -182,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prepared_data_root", type=str, default="artifacts/datasets/bm_21class_split")
     parser.add_argument("--balance_to_3000", type=_bool_argument, default=True)
     parser.add_argument("--paper_augmentation", type=_bool_argument, default=True)
-    parser.add_argument("--max_samples_per_class", type=int, default=3000)
+    parser.add_argument("--max_samples_per_class", type=int, default=6000)
     parser.add_argument("--train_ratio", type=float, default=0.8)
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--test_ratio", type=float, default=0.1)

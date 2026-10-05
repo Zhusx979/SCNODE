@@ -1,9 +1,16 @@
 from pathlib import Path
 
 import csv
+import pytest
 from PIL import Image
 
 from SCNODE.blood_experiment.data import (
+    MAX_SHEAR_DEGREES,
+    MAX_TRANSLATION_FRACTION,
+    STAIN_AUGMENTATION_PROBABILITY,
+    STAIN_INTENSITY_BIAS,
+    STAIN_INTENSITY_SIGMA,
+    RandomAffineMedianFill,
     ManifestImageDataset,
     allocate_split_counts,
     create_split_manifest,
@@ -11,6 +18,23 @@ from SCNODE.blood_experiment.data import (
     get_default_raw_dataset_root,
     load_manifest_records,
 )
+
+
+def test_geometry_shear_matches_twenty_percent_size_limit() -> None:
+    assert MAX_SHEAR_DEGREES == pytest.approx(5.0)
+    assert MAX_TRANSLATION_FRACTION == pytest.approx(0.10)
+    assert STAIN_AUGMENTATION_PROBABILITY == pytest.approx(0.25)
+    assert STAIN_INTENSITY_SIGMA == pytest.approx(0.1)
+    assert STAIN_INTENSITY_BIAS == pytest.approx(0.1)
+
+
+def test_affine_fill_uses_four_corner_median() -> None:
+    image = Image.new("RGB", (20, 20), (0, 0, 0))
+    pixels = image.load()
+    for x, y, color in ((0, 0, (10, 20, 30)), (19, 0, (20, 30, 40)),
+                        (0, 19, (30, 40, 50)), (19, 19, (40, 50, 60))):
+        pixels[x, y] = color
+    assert RandomAffineMedianFill._corner_median(image) == (25, 35, 45)
 
 
 def test_manifest_caps_classes_before_split_and_training_upsampling(tmp_path):

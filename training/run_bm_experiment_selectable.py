@@ -16,6 +16,11 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from SCNODE.blood_experiment.data import (
+    MAX_SHEAR_DEGREES,
+    MAX_TRANSLATION_FRACTION,
+    STAIN_AUGMENTATION_PROBABILITY,
+    STAIN_INTENSITY_BIAS,
+    STAIN_INTENSITY_SIGMA,
     ManifestImageDataset,
     build_default_transforms,
     get_class_names_from_manifest,
@@ -141,6 +146,19 @@ def main(argv=None) -> None:
         "upsampling": upsampling,
         "geometry_augmentation": args.augmentation_mode == "stain_geometry",
         "stain_augmentation": args.augmentation_mode == "stain_geometry",
+        "augmentation_parameters": {
+            "rotation_degrees": [-180, 0],
+            "rotation_direction": "clockwise",
+            "horizontal_flip_probability": 0.5,
+            "vertical_flip_probability": 0.5,
+            "translation_fraction": MAX_TRANSLATION_FRACTION,
+            "shear_degrees": MAX_SHEAR_DEGREES,
+            "affine_fill": "median_of_four_corner_patches",
+            "stain_probability": STAIN_AUGMENTATION_PROBABILITY,
+            "stain_intensity_sigma": STAIN_INTENSITY_SIGMA,
+            "stain_intensity_bias": STAIN_INTENSITY_BIAS,
+            "validation_test_transform": "resize_tensor_imagenet_normalize",
+        },
         "gpu_count": gpu_count,
         "model_name": "SCNODE_ResNet18",
         "normalization": "TWBN",

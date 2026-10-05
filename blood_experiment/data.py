@@ -17,7 +17,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
-DEFAULT_TARGET_SAMPLES_PER_CLASS = 5000
+DEFAULT_TARGET_SAMPLES_PER_CLASS = 6000
 
 
 def get_default_raw_dataset_root() -> Path:
@@ -386,7 +386,7 @@ def _upsample_records(
 
 
 class MacenkoTellezStainAugmentation:
-    def __init__(self, sigma: float = 0.2, bias: float = 0.2, probability: float = 1.0) -> None:
+    def __init__(self, sigma: float = 0.1, bias: float = 0.1, probability: float = 0.25) -> None:
         self.sigma = sigma
         self.bias = bias
         self.probability = probability
@@ -428,6 +428,81 @@ class MacenkoTellezStainAugmentation:
             return image
 
 
+MAX_TRANSLATION_FRACTION = 0.10
+MAX_SHEAR_DEGREES = 5.0
+STAIN_AUGMENTATION_PROBABILITY = 0.25
+STAIN_INTENSITY_SIGMA = 0.1
+STAIN_INTENSITY_BIAS = 0.1
+
+
+class RandomAffineMedianFill:
+    def __init__(self, degrees, translate, shear):
+        self.degrees = degrees
+        self.translate = translate
+        self.shear = shear
+
+    @staticmethod
+    def _corner_median(image):
+        array = np.asarray(image.convert("RGB"), dtype=np.uint8)
+        height, width = array.shape[:2]
+        patches = (
+            array[0, 0], array[0, width - 1], array[height - 1, 0], array[height - 1, width - 1],
+        )
+        pixels = np.asarray(patches, dtype=np.uint8)
+        return tuple(np.median(pixels, axis=0).round().astype(np.uint8).tolist())
+
+    def __call__(self, image):
+        from torchvision.transforms import InterpolationMode
+        from torchvision import transforms
+        from torchvision.transforms import functional as TF
+
+        angle, translations, scale, shear = transforms.RandomAffine.get_params(
+            self.degrees, self.translate, None, self.shear, [image.height, image.width]
+        )
+        return TF.affine(
+            image,
+            angle=angle,
+            translate=translations,
+            scale=scale,
+            shear=shear,
+            interpolation=InterpolationMode.BILINEAR,
+            fill=self._corner_median(image),
+        )
+
+
+def macenko_tellez_perturb(image: Image.Image, rng: np.random.Generator, strength: float = 0.5) -> Image.Image:
+    try:
+        arr = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+        height, width, _ = arr.shape
+        flat = arr.reshape(-1, 3)
+        od = -np.log(np.clip(flat, 1e-6, 1.0))
+        keep = np.all(od > 0.15, axis=1)
+        sample = od[keep]
+        if sample.shape[0] < 20:
+            return image
+        _, _, vh = np.linalg.svd(sample - sample.mean(axis=0), full_matrices=False)
+        basis = vh[:2]
+        projection = sample @ basis.T
+        theta = np.arctan2(projection[:, 1], projection[:, 0])
+        low, high = np.percentile(theta, [1, 99])
+        vectors = np.stack((np.cos([low, high]), np.sin([low, high])), axis=1) @ basis
+        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True).clip(min=1e-8)
+        if vectors[0, 0] < vectors[1, 0]:
+            vectors = vectors[::-1]
+        stain_matrix = vectors.T
+        concentrations = np.linalg.lstsq(stain_matrix, od.T, rcond=None)[0]
+        concentration_scale = rng.lognormal(mean=0.0, sigma=0.08 * strength, size=(2, 1))
+        perturbed_matrix = stain_matrix * (1.0 + rng.normal(0.0, 0.03 * strength, stain_matrix.shape))
+        perturbed_matrix /= np.linalg.norm(perturbed_matrix, axis=0, keepdims=True).clip(min=1e-8)
+        reconstructed_od = perturbed_matrix @ (concentrations * concentration_scale)
+        output = np.exp(-np.clip(reconstructed_od.T, -8.0, 8.0)).reshape(height, width, 3)
+        if not np.isfinite(output).all():
+            return image
+        return Image.fromarray(np.uint8(np.clip(output * 255.0, 0, 255)), mode="RGB")
+    except (FloatingPointError, ValueError, np.linalg.LinAlgError, OverflowError):
+        return image
+
+
 def build_default_transforms(image_size: int = 224, paper_augmentation: bool = True):
     try:
         from torchvision import transforms
@@ -440,14 +515,18 @@ def build_default_transforms(image_size: int = 224, paper_augmentation: bool = T
     train_transform = transforms.Compose(
         [
             transforms.Resize((image_size, image_size)),
-            transforms.RandomAffine(
+            RandomAffineMedianFill(
                 degrees=(-180, 0),
-                translate=(0.25, 0.25),
-                shear=(-20, 20),
+                translate=(MAX_TRANSLATION_FRACTION, MAX_TRANSLATION_FRACTION),
+                shear=(-MAX_SHEAR_DEGREES, MAX_SHEAR_DEGREES),
             ),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
-            MacenkoTellezStainAugmentation() if paper_augmentation else transforms.Lambda(lambda image: image),
+            MacenkoTellezStainAugmentation(
+                sigma=STAIN_INTENSITY_SIGMA,
+                bias=STAIN_INTENSITY_BIAS,
+                probability=STAIN_AUGMENTATION_PROBABILITY,
+            ) if paper_augmentation else transforms.Lambda(lambda image: image),
             transforms.ToTensor(),
             transforms.Normalize(
                 [0.485, 0.456, 0.406],

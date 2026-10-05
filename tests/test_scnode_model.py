@@ -7,6 +7,7 @@ import torch.nn as nn
 pytest.importorskip("torchdiffeq")
 
 import SCNODE.models.ode.scnode.scnode_resnet as scnode_resnet
+import SCNODE.models.ode.scnode.scnode as scnode_impl
 from SCNODE.models.ode.scnode.config import ScnodeConfig
 from SCNODE.models.ode.scnode.anode_variants import Get_aodenet18
 from SCNODE.models.ode.scnode.scnode_resnet import (
@@ -343,7 +344,7 @@ def test_fixed_solver_passes_time_grid_tolerances_and_step_size_to_odeint(
         assert isinstance(state, torch.Tensor)
         return torch.stack((state, state))
 
-    monkeypatch.setattr(scnode_resnet, "odeint", fake_odeint)
+    monkeypatch.setattr(scnode_impl, "odeint", fake_odeint)
     ode_block = ODEBlock(
         ConstantODEFunc(),
         config=ScnodeConfig(
@@ -375,7 +376,7 @@ def test_dopri5_passes_endpoint_grid_without_fixed_step_options_to_odeint(
         assert isinstance(state, torch.Tensor)
         return torch.stack((state, state))
 
-    monkeypatch.setattr(scnode_resnet, "odeint", fake_odeint)
+    monkeypatch.setattr(scnode_impl, "odeint", fake_odeint)
     ode_block = ODEBlock(
         ConstantODEFunc(),
         config=ScnodeConfig(
