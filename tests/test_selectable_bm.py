@@ -41,6 +41,7 @@ def test_none_mode_does_not_upsample_or_use_stain(tmp_path, monkeypatch):
     assert len(loaders["train"].dataset) == 4
     assert len(loaders["val"].dataset) == 2
     assert len(loaders["test"].dataset) == 2
+    next(iter(loaders["train"]))
 
 
 def test_stain_geometry_mode_upsamples(tmp_path):
@@ -60,3 +61,24 @@ def test_selectable_defaults_use_six_thousand_training_augmentation():
     args = build_parser().parse_args(["--raw-data-root", "raw", "--experiment-root", "experiment"])
     assert args.target_per_class == 6000
     assert args.augmentation_mode == "stain_geometry"
+    assert args.epochs == 20
+    assert args.batch_size == 256
+    assert args.seed == 42
+
+
+def test_augmented_training_has_six_thousand_per_class_without_split_leakage(tmp_path):
+    from collections import Counter
+
+    _make_dataset(tmp_path / "raw")
+    args = _args(tmp_path, "stain_geometry")
+    args.target_per_class = 6000
+    loaders, _, _, _ = build_selectable_dataloaders(args)
+    train = loaders["train"].dataset.records
+    val = loaders["val"].dataset.records
+    test = loaders["test"].dataset.records
+    assert Counter(record.class_index for record in train) == {0: 6000, 1: 6000}
+    paths = [{record.image_path for record in records} for records in (train, val, test)]
+    assert paths[0].isdisjoint(paths[1])
+    assert paths[0].isdisjoint(paths[2])
+    assert paths[1].isdisjoint(paths[2])
+    assert len(val) == len(test) == 2

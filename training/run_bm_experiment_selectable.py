@@ -24,7 +24,7 @@ from SCNODE.blood_experiment.data import (
     save_dataset_summary,
 )
 from SCNODE.blood_experiment.selectable_data import EvalDataset, NoAugmentationDataset
-from SCNODE.training.classification_trainer import conv_init, train_val_test_model
+from SCNODE.training.classification_trainer import train_val_test_model
 from SCNODE.training.experiment_config import AVAILABLE_MODELS, ExperimentRuntimeConfig
 from SCNODE.training.run_bm_experiment import build_model
 
@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-root", type=Path, required=True)
     parser.add_argument("--target-per-class", type=int, default=6000)
     parser.add_argument("--augmentation-mode", choices=("none", "stain_geometry"), default="stain_geometry")
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
@@ -143,6 +143,10 @@ def main(argv=None) -> None:
         "stain_augmentation": args.augmentation_mode == "stain_geometry",
         "gpu_count": gpu_count,
         "model_name": "SCNODE_ResNet18",
+        "normalization": "TWBN",
+        "twbn_grids": 11,
+        "twbn_window": 5,
+        "checkpoint_selection": "validation_accuracy",
         "train_samples": len(loaders["train"].dataset),
         "val_samples": len(loaders["val"].dataset),
         "test_samples": len(loaders["test"].dataset),
@@ -160,7 +164,6 @@ def main(argv=None) -> None:
     print("GPUs: {}".format(gpu_count))
     spec = AVAILABLE_MODELS["SCNODE_ResNet18"]
     model = build_model(spec, len(class_names), device, argparse.Namespace(gpus=args.gpus))
-    model.apply(conv_init)
     train_val_test_model(
         model=model, trainloader=loaders["train"], valloader=loaders["val"], testloader=loaders["test"],
         criterion=torch.nn.CrossEntropyLoss(), device=device, name="SCNODE_ResNet18",

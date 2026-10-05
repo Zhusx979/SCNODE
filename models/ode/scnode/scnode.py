@@ -163,6 +163,7 @@ class TWBN(nn.Module):
         self.register_buffer('T_star', grid)
         self.register_buffer('running_mean', torch.zeros(num_grids, num_features))
         self.register_buffer('running_var', torch.ones(num_grids, num_features))
+        self.register_buffer('grid_initialized', torch.zeros(num_grids, dtype=torch.bool))
 
         if affine:
             self.gamma = nn.Parameter(torch.ones(num_grids, num_features))
@@ -173,17 +174,47 @@ class TWBN(nn.Module):
 
     def _find_window(self, t, T_star):
         """Find the window of time grids based on the time t."""
-        l = torch.searchsorted(T_star, t.detach()).item() - 1
+        l = torch.searchsorted(T_star, t.detach(), right=True).item() - 1
         l = max(0, min(l, self.num_grids - 2))
         return l
 
-    def _smooth_stats(self, stats, l):
+    def _smooth_stats(self, stats, l, valid=None):
         """Apply smoothing to the stats over the sliding window."""
 
         end = min(l + self.window_size, self.num_grids)
         offsets = torch.arange(end - l, device=stats.device, dtype=stats.dtype)
         weights = torch.clamp(1.0 - offsets / self.window_size, min=0.1)
+        if valid is not None:
+            masked_weights = weights * valid[l:end].to(stats.dtype)
+            if bool(masked_weights.sum() > 0):
+                weights = masked_weights
         return torch.sum(stats[l:end] * weights.view(-1, 1), dim=0) / weights.sum()
+
+    def _update_running(self, mean, var, l, omega1, omega2):
+        with torch.no_grad():
+            for index, weight in ((l, omega1), (l + 1, omega2)):
+                weight = float(weight.detach())
+                if weight <= 0:
+                    continue
+                if not bool(self.grid_initialized[index]):
+                    self.running_mean[index].copy_(mean.detach())
+                    self.running_var[index].copy_(var.detach())
+                    self.grid_initialized[index] = True
+                else:
+                    self.running_mean[index].lerp_(mean.detach(), self.momentum * weight)
+                    self.running_var[index].lerp_(var.detach(), self.momentum * weight)
+
+    def _training_window(self, mean, var, l):
+        historical_mean = self.running_mean.detach().clone()
+        historical_var = self.running_var.detach().clone()
+        valid = self.grid_initialized.clone()
+        historical_mean[l:l + 2] = mean
+        historical_var[l:l + 2] = var
+        valid[l:l + 2] = True
+        return (
+            self._smooth_stats(historical_mean, l, valid),
+            self._smooth_stats(historical_var, l, valid).clamp_min(self.eps),
+        )
 
     def _interpolate(self, values, omega1, omega2, l):
         """Perform linear interpolation between l and l+1."""
@@ -204,7 +235,7 @@ class TWBN(nn.Module):
         if x.ndim != 4 or x.shape[1] != self.num_features:
             raise ValueError("TWBN expects a BCHW tensor with the configured channel count")
         use_batch_stats = self.training if training is None else training
-        t = t.to(device=x.device, dtype=x.dtype).reshape(())
+        t = torch.as_tensor(t, device=x.device, dtype=x.dtype).reshape(())
         grid = self.T_star.to(device=x.device, dtype=x.dtype)
         l = self._find_window(t, grid)
         upper = l + 1
@@ -215,19 +246,12 @@ class TWBN(nn.Module):
 
         if use_batch_stats:
             batch_mean = x.mean(dim=(0, 2, 3))
-            batch_var = x.var(dim=(0, 2, 3), unbiased=False)
-            historical_mean = self.running_mean.to(x).clone()
-            historical_var = self.running_var.to(x).clone()
-            historical_mean[l] = batch_mean
-            historical_var[l] = batch_var
-            mean = self._smooth_stats(historical_mean, l)
-            var = self._smooth_stats(historical_var, l)
-            with torch.no_grad():
-                self.running_mean[l].lerp_(mean.detach(), self.momentum * float(omega1))
-                self.running_var[l].lerp_(var.detach(), self.momentum * float(omega1))
+            batch_var = x.var(dim=(0, 2, 3), unbiased=False).clamp_min(self.eps)
+            self._update_running(batch_mean, batch_var, l, omega1, omega2)
+            mean, var = self._training_window(batch_mean, batch_var, l)
         else:
-            mean = self._interpolate(self.running_mean, omega1, omega2, l).to(x)
-            var = self._interpolate(self.running_var, omega1, omega2, l).to(x)
+            mean = self._smooth_stats(self.running_mean, l, self.grid_initialized).to(x)
+            var = self._smooth_stats(self.running_var, l, self.grid_initialized).to(x).clamp_min(self.eps)
 
         normalized = (x - mean.view(1, -1, 1, 1)) / torch.sqrt(var.view(1, -1, 1, 1) + self.eps)
         return normalized * gamma_j.view(1, -1, 1, 1) + beta_j.view(1, -1, 1, 1)

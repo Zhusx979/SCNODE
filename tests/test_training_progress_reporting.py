@@ -156,7 +156,9 @@ def test_epoch_metrics_include_ode_diagnostics(tmp_path: Path) -> None:
     assert "nonfinite_batch_count" in contents
 
 
-def test_training_writes_runtime_artifacts_and_uses_validation_best_checkpoint(tmp_path: Path) -> None:
+def test_training_writes_runtime_artifacts_and_uses_validation_best_checkpoint(tmp_path: Path, monkeypatch) -> None:
+    scores = iter((0.1, 0.9))
+    monkeypatch.setattr("SCNODE.training.classification_trainer.f1_score", lambda *args, **kwargs: next(scores))
     runtime_config = ExperimentRuntimeConfig(
         output_root=tmp_path,
         learning_rate=1.0,
@@ -184,6 +186,10 @@ def test_training_writes_runtime_artifacts_and_uses_validation_best_checkpoint(t
     model_dir = tmp_path / "tiny"
     assert (model_dir / "resolved_config.json").is_file()
     assert (model_dir / "best_checkpoint.pt").is_file()
+    checkpoint = torch.load(model_dir / "best_checkpoint.pt", map_location="cpu")
+    assert checkpoint["epoch"] == 1
+    assert checkpoint["validation_accuracy"] == 50.0
+    assert checkpoint["validation_macro_f1"] == 0.1
     assert (model_dir / "test_predictions.npz").is_file()
     assert json.loads((model_dir / "resolved_config.json").read_text(encoding="utf-8"))["learning_rate"] == 1.0
     assert np.load(model_dir / "test_predictions.npz")["predictions"].tolist() == [0, 0]

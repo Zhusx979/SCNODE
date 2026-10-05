@@ -126,18 +126,45 @@ def test_twbn_uses_distinct_time_grid_and_window_width() -> None:
     assert layer.gamma.shape == (9, 2)
 
 
-def test_twbn_training_updates_time_statistics_and_eval_interpolates() -> None:
+def test_twbn_training_updates_both_neighbors_and_eval_freezes_statistics() -> None:
     layer = scnode_resnet.TWBN(num_features=1, window_size=2, num_grids=5, momentum=1.0)
     layer.train()
     x = torch.full((2, 1, 2, 2), 4.0)
     layer(x, torch.tensor(0.375))
 
     assert layer.running_mean[1, 0].item() > 0.0
-    assert layer.running_mean[2, 0].item() == pytest.approx(0.0)
+    assert layer.running_mean[2, 0].item() == pytest.approx(4.0)
+    assert layer.grid_initialized.tolist() == [False, True, True, False, False]
 
     layer.eval()
+    state_before = {name: value.clone() for name, value in layer.named_buffers()}
     output = layer(x, torch.tensor(0.375))
     assert torch.isfinite(output).all()
+    for name, value in layer.named_buffers():
+        assert torch.equal(value, state_before[name])
+
+
+def test_twbn_window_changes_eval_output() -> None:
+    narrow = scnode_resnet.TWBN(1, window_size=1)
+    wide = scnode_resnet.TWBN(1, window_size=5)
+    for layer in (narrow, wide):
+        layer.running_mean.copy_(torch.arange(11).reshape(11, 1))
+        layer.grid_initialized.fill_(True)
+        layer.eval()
+    inputs = torch.ones(2, 1, 2, 2)
+    assert not torch.allclose(narrow(inputs, 0.2), wide(inputs, 0.2))
+
+
+def test_twbn_multiple_solver_evaluations_support_backward() -> None:
+    layer = scnode_resnet.TWBN(2)
+    inputs = torch.randn(2, 2, 4, 4, requires_grad=True)
+    state = inputs
+    for time in (0.0, 0.125, 0.25, 0.5, 1.0):
+        state = state + 0.1 * layer(state, time)
+    state.square().mean().backward()
+    assert torch.isfinite(state).all()
+    assert torch.isfinite(inputs.grad).all()
+    assert torch.isfinite(layer.gamma.grad).all()
 
 
 def test_cifar_input_uses_small_image_stem() -> None:

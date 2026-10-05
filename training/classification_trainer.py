@@ -278,8 +278,7 @@ def train_val_test_model(
     )
     best_checkpoint_path = model_dir / "best_checkpoint.pt"
 
-    best_accuracy = 0.0
-    best_validation_score = float("-inf")
+    best_accuracy = float("-inf")
     best_test_accuracy = 0.0
     train_accuracies = []
     val_accuracies = []
@@ -455,13 +454,13 @@ def train_val_test_model(
             )
             validation_score = float(validation_score)
 
-            if validation_score > best_validation_score:
-                best_validation_score = validation_score
+            if val_accuracy > best_accuracy:
                 best_accuracy = val_accuracy
                 torch.save(
                     {
                         "model_state_dict": model.state_dict(),
                         "epoch": epoch + 1,
+                        "validation_accuracy": val_accuracy,
                         "validation_macro_f1": validation_score,
                     },
                     best_checkpoint_path,
@@ -582,7 +581,8 @@ def train_val_test_model(
 
     if not best_checkpoint_path.exists():
         torch.save(
-            {"model_state_dict": model.state_dict(), "epoch": num_epochs, "validation_macro_f1": None},
+            {"model_state_dict": model.state_dict(), "epoch": num_epochs,
+             "validation_accuracy": None, "validation_macro_f1": None},
             best_checkpoint_path,
         )
     checkpoint = torch.load(best_checkpoint_path, map_location=device)
