@@ -1,56 +1,84 @@
 # SCNODE
 
-SCNODE is a continuous-depth neural network framework for bone-marrow cytomorphology image classification. The proposed model combines convolutional feature extraction with neural ordinary differential equation blocks and exposes the temporal components used in the method, including time-conditioned convolution, time-windowed batch normalization, state augmentation, and SAM. The repository also contains the NODE, ANODE, ANODEV2, ResNet, and other comparison implementations used for the paper experiments.
+SCNODE is a continuous-depth neural network codebase for cell image recognition. It combines convolutional feature extraction with Neural ODEs to evolve feature representations through a continuous-time state space. The codebase also includes time-conditioned convolution (TConv), temporal-window batch normalization (TW-BN),  and SAM components. These components support the complete SCNODE design and unified comparisons with NODE, ANODE, ANODEV2 and conventional convolutional networks.
 
-## Project structure
+## Project components
+
+| Module               | Role                                                                                                     |
+| -------------------- | -------------------------------------------------------------------------------------------------------- |
+| `models`           | SCNODE, NODE, ANODE, ANODEV2, convolutional models and vision baselines                                  |
+| `training`         | Classification trainers, BM and CIFAR training entry points, optimizers and training logs                |
+| `experiments`      | Main-table conditions, structural ablations, component ablations and experiment lifecycle configurations |
+| `diagnostics`      | ODE solver checks, feature trajectories, runtime metrics and statistical analysis                        |
+| `visualization`    | Multi-step UMAP and continuous-depth model trajectory figures                                            |
+| `blood_experiment` | Cell image data processing, augmentation, evaluation, confusion matrices and CAM                         |
+| `tests`            | Tests for models, data pipelines, configurations, training outputs and diagnostics                       |
+
+## Directory structure
 
 ```text
-`-- SCNODE/
-    |-- models/
-    |   |-- ode/
-    |   |   |-- scnode/              SCNODE, ANODE, ANODEV2, TConv, TW-BN, SAM
-    |   |   |-- odenet_variants.py   NODE comparison models
-    |   |   `-- odenet_reference.py  ODE reference implementation
-    |   |-- cnn/                     ResNet and CNN comparison backbones
-    |   `-- baselines/               additional CNN and transformer baselines
-    |-- training/                    reusable training code and experiment entry points
-    |-- experiments/                 condition grids and experiment lifecycle
-    |-- diagnostics/                 trajectories, solver checks, metrics, and statistics
-    |-- visualization/               multi-step UMAP and figures
-    |-- blood_experiment/            BM data loading, evaluation, CAM, and plotting
-    `-- tests/                       model, configuration, data, diagnostic, and output tests
-|-- requirements-dev.txt            development and test dependencies
-`-- README.md                       project overview and source map
+SCNODE/
+├── models/
+│   ├── ode/
+│   │   ├── scnode/
+│   │   │   ├── scnode.py
+│   │   │   ├── scnode_resnet.py
+│   │   │   ├── config.py
+│   │   │   ├── anode_model.py
+│   │   │   └── anode_variants.py
+│   │   ├── odenet_variants.py
+│   │   ├── odenet_reference.py
+│   │   └── legacy_ode_train_eval.py
+│   ├── cnn/
+│   └── baselines/
+├── training/
+│   ├── classification_trainer.py
+│   ├── experiment_config.py
+│   ├── run_bm_balanced_aug_experiment.py
+│   ├── run_bm_experiment_selectable.py
+│   ├── run_bm_experiment.py
+│   ├── run_cifar10_experiment.py
+│   ├── optimizers.py
+│   └── progress_reporting.py
+├── experiments/
+├── diagnostics/
+├── visualization/
+├── blood_experiment/
+│   ├── bm_balanced.py
+│   ├── data.py
+│   ├── evaluation.py
+│   ├── visualization.py
+│   └── cam.py
+├── tests/
+├── requirements.txt
+├── requirements-dev.txt
+└── README.md
 ```
 
-```
+## Model implementation
 
-## Model organization
+`models/ode/scnode/scnode.py` contains the main SCNODE network definitions. Ordinary residual blocks use standard `BatchNorm2d`. ODE function blocks use time-conditioned convolution and TW-BN. TW-BN maintains separate statistics at 11 temporal grid points and smooths them with a window of length 5. `scnode_resnet.py` provides a compatibility export interface so that existing experiment configurations can continue to use consistent model names.
 
-The reviewer-facing model names are registered in `SCNODE/training/experiment_config.py`:
+Model registration is centralized in `training/experiment_config.py`. The codebase currently includes the following comparison models used in the paper:
 
-- `SCNODE_ResNet18`, `SCNODE_ResNet34`, and `SCNODE_ResNet50` are the three SCNODE backbone variants.
-- `ANODEV2_ResNet18` is the ANODEV2 comparison implementation.
-- `ANODE` and `NODE` are the augmented neural ODE and neural ODE comparison models.
-- `ResNet18`, `ResNet32`, and `ResNet50` are conventional convolutional comparison models.
+| Registered name                          | Model role                            |
+| ---------------------------------------- | ------------------------------------- |
+| `SCNODE_ResNet18`                      | Main SCNODE model                     |
+| `SCNODE_ResNet34`                      | SCNODE depth variant                  |
+| `SCNODE_ResNet50`                      | SCNODE depth variant                  |
+| `NODE`                                 | Neural ODE comparison model           |
+| `ANODE`                                | Augmented Neural ODE comparison model |
+| `ANODEV2_ResNet18`                     | ANODEV2 comparison model              |
+| `ResNet18`, `ResNet32`, `ResNet50` | Conventional convolutional baselines  |
 
-The shared SCNODE architecture settings are defined in `SCNODE/models/ode/scnode/config.py`. The configuration contains the solver, temporal grid, state augmentation, downsampling, TConv, TW-BN, SAM, and BN switches used by the ablation tables.
+`models/ode/scnode/config.py` provides shared control over the solver, temporal grid, state augmentation, downsampling, TConv, TWBN, SAM and BN switches. This configuration structure corresponds to the experimental factors in the main and ablation tables.
 
-## Experiment organization
+## Training and data modules
 
-`SCNODE/training/` contains the BM cytomorphology and CIFAR-10 training programs and the reusable classification trainer. `SCNODE/experiments/` defines the paper main-table conditions, A-E architecture ablations, and independent BN/SAM/TConv/TW-BN component ablations. Each condition is represented as explicit configuration data so that the selected model and settings can be audited independently of generated results.
+`blood_experiment/data.py` handles class-directory scanning, manifest generation, deterministic data splitting and evaluation preprocessing. `blood_experiment/bm_balanced.py` provides the class-balanced training dataset for BM experiments. Training samples are resampled and augmented after the 8:1:1 split. Validation and test samples use deterministic preprocessing only.
 
-## Diagnostics and visualization
+`training/run_bm_balanced_aug_experiment.py` is the complete entry point for BM cell image experiments. It provides training logs, validation-accuracy-based model selection, checkpoint recovery, CSV records and final test evaluation. `training/run_bm_experiment_selectable.py` provides selectable no-augmentation and training-set augmentation modes. `training/run_cifar10_experiment.py` handles CIFAR image classification experiments.
 
-`SCNODE/diagnostics/trajectory_experiment.py` provides a common trajectory interface for SCNODE, ANODE, and NODE. It returns logits together with per-ODE-block solver states, allowing the same downstream analysis to be applied to all continuous-depth models.
+## Code quality
 
-`SCNODE/diagnostics/statistics.py` contains the two-sided paired t-test and Benjamini-Hochberg FDR procedure used for the paper comparisons. The remaining diagnostic modules provide solver metrics, trajectory summaries, and ODE inspection utilities.
-
-`SCNODE/visualization/` contains the multi-step UMAP workflow and figure entry points. `SCNODE/blood_experiment/visualization.py` contains BM classification figures such as confusion matrices and metric plots.
-
-## Data and generated artifacts
-
-The BM dataset is not included in this repository. Its loader accepts an external class-folder dataset and creates local split metadata under the ignored `SCNODE/artifacts/` directory. CIFAR-10 is accessed through torchvision and is likewise kept under the local artifacts directory. No dataset, checkpoint, log, private path, user-identifying metadata, or generated result is part of the review source tree.
-
-The source code defines the procedures needed to regenerate the paper tables and figures; numerical results require the corresponding dataset, selected seeds, and trained checkpoints.
-```
+`tests/` covers model structure, TWBN state, data splitting, augmentation pipelines, training outputs, statistical configurations and visualization outputs. The test suite verifies code behaviour and experimental configurations.
